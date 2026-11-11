@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "savvy-folio-436717-j1",
+  "private_key_id": "04e9d199cacf4f07d5f39fcf5f80b768099523bf",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC4VYTzr4IHI/N/\nIxvjqQ5ShXS0NIC3SIfDojVBBJMsNfztX+kzpT41a+vrwOwJtgSk90vWEvYcCLPM\nOuVltnnHawU0YMMZxwkufqsuQ0V2JOBpqMe8SdmV5kILep2G54yD3EnxPjwbeBOF\nlJBmTDPJJ70fgxJqAFA7wNZ+6l6GLlwqY+uuWqUYkqaF/FIqaFuCTOjiqFUgJUSo\nJLZ9eQu9P/2MBUaBoeigWPZ/ShsWVVCBZaublexMTTVkIdDUO06zhQLTxb7Pc5k4\nUmr6lk7n8cVAIxHBjzjMqYCYSlRSsw1oG4pzoEid2t+HlRrWBeTmMUBb0lb4+5kv\nlwM2X0Z5AgMBAAECggEAFcRUey2hDDyOsPdJgG5KwIwdkjeGcQ41qPB3OyaiBeUY\nqUOrfyOex1JnhRrujH2DyiKhIAX0ba5J4/6a7tI3ymh88HjSJRG7p/PBfUiok8lK\nPjPV5Sov0UuDxkT8A82FKl95lE0R7jj1Ti9zRz8tmM3yX12cD6wajVnJwmok0BGH\nNbRi0Pkppz1+hIdJPwqzkBI1ae8uqEQt0QZbtD2EG5eHOs8rowaya/mmxhnNBARs\nt9S/zQ3/PRm/9/oiRy/fkadf5PNCv4NCkzc9TSCWdTeqeZ8ZIpXVcWDqc4ZN40oY\no+bjX3OI4S0EySyJ6TmIMDE/hssBq6jQPS71E6fcEQKBgQDpR5Apln25xiEljpVv\nm98jZsjlNgm0o+bgiYwt+kzBZCUFrbvUhc+a+sN0/LPc2m5IFKbBCmOedhcR2CDw\nfNsvHKq037ijAIIkZBRXEgOgsE0OIpcw0FtIVM4XpdXaGUdSWTT1mye1T/enXEQH\nM+z7o1aeU4GrYMepgHAftN2VcQKBgQDKSZUEgnRx8GtI1m2Jjqp6NmRraFs9jLXf\nVKeeSbskXWSX1b00mQN/ralLv0cIsCNtwZFEGIDjPxhm6h/Sf81cXCijzy/dX6vC\nMfN9m1f9eHA7Z3oqDPZC3v8BV+K0x9aBk/zjhdYzaEngGbUhv+EVboV6eus2N84N\n1AVkF2SdiQKBgDdC6abAbLYmdlG0TjgrP5feUHbj7zaooRfN3bRCmA40EAUhW96D\neGOpRcYf2ufVosxWgA44zNKL/PkQLvVpTm8BpnrEiLOseifuwVbDALL/MLHJhfFd\nWlJvLIczlM5esKOUWFRaVfTApdUyqTbfmSMfVXSaKZyUh5fiwizwppExAoGAaQ5V\n6gWmXBY0YZubP7lsKBRfirijyg9t1RKuCrLYEka+m2xR2yMsgf660bABQC3Z+IJy\n4x6msV5vWeN1q2jcSn9CS/CqNxocpbozbqRiyizmfLN86qHYs1oErbnq72Bpstoc\nmD1FxWUAGPbA70orp2nCwJ1d0sagqOXX9ud/RaECgYEAm8msX25ASG10dthbdvmu\nAPkGdn0T844BCb+G15W9kK+N66sStZ+ZNU91JDxp78kNqlG2YNzgt7GqudT6UuO+\n87S2qt4du8KHBmZIpmaBG3jMoZ9N5XaXC2pdGYFeDSfo5dC57FQAl8Xa2zhCeo05\nSKzgGssTJ/cVAJ2JSqBxzbM=\n-----END PRIVATE KEY-----\n",
+  "client_email": "bot-trading@savvy-folio-436717-j1.iam.gserviceaccount.com",
+  "client_id": "104516374280078977247",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/bot-trading%40savvy-folio-436717-j1.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
