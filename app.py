@@ -124,12 +124,11 @@ def obtener_cliente_gsheets():
             return gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
         elif os.path.exists(ARCHIVO_CRED):
             return gspread.service_account(filename=ARCHIVO_CRED)
-    except Exception:
-        pass
+    except Exception as e:
+        st.error(f"Error obteniendo cliente gsheets: {e}")
     return None
 
 def guardar_hoja_sincronizada(df_guardar, nombre_hoja):
-    # 1. Guardar en Google Sheets (Nube)
     gc = obtener_cliente_gsheets()
     if gc:
         try:
@@ -145,7 +144,6 @@ def guardar_hoja_sincronizada(df_guardar, nombre_hoja):
         except Exception as e:
             st.warning(f"Aviso sincronizando nube: {e}")
 
-    # 2. Guardar en Excel local si existe (Respaldo en PC)
     if os.path.exists(ARCHIVO_EXCEL):
         try:
             with pd.ExcelWriter(ARCHIVO_EXCEL, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
@@ -185,12 +183,13 @@ def cargar_datos_completos():
                     registros = ws.get_all_records()
                     df_h = pd.DataFrame(registros)
                     hojas[h] = convertir_columnas_numericas(df_h)
-                except Exception:
+                except Exception as ex_h:
+                    st.error(f"Error leyendo la pestaña '{h}': {ex_h}")
                     hojas[h] = pd.DataFrame()
             if not hojas.get("Historial_Tendencias", pd.DataFrame()).empty:
                 return hojas, "☁️ Conectado a Google Sheets (Nube 24/7)"
         except Exception as e:
-            st.error(f"Error detallado Google Sheets: {e}")
+            st.error(f"🔴 ERROR CRÍTICO DE GOOGLE SHEETS: {e}")
 
     if os.path.exists(ARCHIVO_EXCEL):
         for h in nombres_hojas:
@@ -274,14 +273,6 @@ def colorear_accion(val):
         return "background-color: rgba(0, 229, 255, 0.25); color: #84ffff; font-weight: bold;"
     if "HOLD" in s or "⏳" in s or "ROTAR" in s:
         return "background-color: rgba(255, 193, 7, 0.22); color: #ffd54f; font-weight: bold;"
-    return ""
-
-def colorear_fuente(val):
-    s = str(val)
-    if "FB" in s:
-        return "background-color: rgba(41, 121, 255, 0.28); color: #82b1ff; font-weight: bold;"
-    if "GG" in s:
-        return "background-color: rgba(0, 200, 83, 0.28); color: #b9f6ca; font-weight: bold;"
     return ""
 
 # ==========================================
@@ -551,33 +542,6 @@ with tab1:
             fig_curva.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(fig_curva, use_container_width=True)
 
-    col_pnl1, col_pnl2 = st.columns([1, 1])
-    with col_pnl1:
-        st.subheader("📑 Estado de Resultados (Modelo Costeo Variable)")
-        ventas_brutas = int(vendidos["Precio_Venta"].sum()) if not vendidos.empty else 0
-        costo_adq = int(vendidos["Precio_Pagado"].sum()) if not vendidos.empty else 0
-        ea_tax = int(round(ventas_brutas * 0.05))
-        ingreso_neto = ventas_brutas - ea_tax
-        contrib_marginal = ingreso_neto - costo_adq
-
-        df_estado_resultados = pd.DataFrame([
-            {"Rubro Contable": "(+) Ingresos Brutos por Ventas Cerradas", "Monto (Monedas)": ventas_brutas},
-            {"Rubro Contable": "(-) Costo Variable Comercial (5% EA Tax)", "Monto (Monedas)": -ea_tax},
-            {"Rubro Contable": "(=) Ingreso Neto de Realización", "Monto (Monedas)": ingreso_neto},
-            {"Rubro Contable": "(-) Costo de Adquisición de Cartas Vendidas (CMV)", "Monto (Monedas)": -costo_adq},
-            {"Rubro Contable": "(=) CONTRIBUCIÓN MARGINAL NETA (GANANCIA REALIZADA)", "Monto (Monedas)": contrib_marginal},
-            {"Rubro Contable": "📦 Inventario Activo (Valuado a Costo Histórico)", "Monto (Monedas)": cap_inmovilizado},
-            {"Rubro Contable": "📈 Inventario Activo a VNR Dual FB+GG (Neto 5% Tax)", "Monto (Monedas)": vnr_total},
-            {"Rubro Contable": "⚖️ Resultado por Tenencia (No Realizado)", "Monto (Monedas)": tenencia_total},
-        ])
-        styled_er = df_estado_resultados.style.map(colorear_accion, subset=["Rubro Contable"]).map(colorear_neto_y_roi, subset=["Monto (Monedas)"])
-        st.dataframe(styled_er, use_container_width=True, hide_index=True, column_config={"Monto (Monedas)": st.column_config.NumberColumn("💰 Monedas", format="%+d mnds")})
-
-    with col_pnl2:
-        st.subheader("📜 Libro Mayor de Ventas Cerradas")
-        if not vendidos.empty:
-            st.dataframe(vendidos.style.map(colorear_neto_y_roi, subset=["Ganancia_Neta", "ROI_%"]), use_container_width=True, hide_index=True)
-
 with tab2:
     st.subheader("🔍 Lupa Visual Histórica (Evolución de Precio, Piso, Promedio y Zona de Puja)")
     if not df_historial.empty:
@@ -606,79 +570,6 @@ with tab2:
             fig_hist.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=340)
             st.plotly_chart(fig_hist, use_container_width=True)
 
-    st.markdown("---")
-    st.subheader("⚡ Padrón Dual Interactivo (Tildá 🛒 y envialas directo a la Nube con 1 Clic)")
-    c_f1, c_f2, c_f3 = st.columns([2, 1, 1])
-    with c_f1:
-        busqueda_jug = st.text_input("🔍 Filtrar por Nombre, Media o Tipo de Carta", placeholder="Ej: 86, TOTW, Mbappe...")
-    with c_f2:
-        filtro_accion = st.selectbox("Filtrar por Señal", ["Todas", "🟢 COMPRAR", "⚡ Flipping Rápido", "💎 Mínimo Histórico", "🔴 VENDER", "⚠️ Evitar Cuchillo"])
-    with c_f3:
-        tope_precio_filtro = st.slider("Precio Máximo (Monedas)", min_value=500, max_value=200000, value=200000, step=2500)
-
-    if not df_ult_corte.empty:
-        df_filtrado = df_ult_corte[df_ult_corte["Precio_Actual"] <= tope_precio_filtro].copy()
-        if busqueda_jug.strip():
-            df_filtrado = df_filtrado[df_filtrado["Jugador"].astype(str).str.lower().str.contains(busqueda_jug.strip().lower(), na=False)]
-        if filtro_accion == "🟢 COMPRAR":
-            df_filtrado = df_filtrado[df_filtrado["Accion"] == "🟢 COMPRAR"]
-        elif filtro_accion == "⚡ Flipping Rápido":
-            df_filtrado = df_filtrado[df_filtrado["Senal_Trading"].astype(str).str.contains("⚡", na=False)]
-        elif filtro_accion == "💎 Mínimo Histórico":
-            df_filtrado = df_filtrado[df_filtrado["Estado_Historico"].astype(str).str.contains("💎", na=False)]
-        elif filtro_accion == "🔴 VENDER":
-            df_filtrado = df_filtrado[df_filtrado["Accion"] == "🔴 VENDER"]
-        elif filtro_accion == "⚠️ Evitar Cuchillo":
-            df_filtrado = df_filtrado[df_filtrado["Senal_Trading"].astype(str).str.contains("⚠️", na=False)]
-
-        cols_mostrar = [c for c in [
-            "Jugador", "Precio_Actual", "Fuente_Mejor_Precio", "Precio_Futbin", "Precio_FUTGG",
-            "Variacion_Bruta_%", "Senal_Trading", "Puja_Max_10%_ROI", "Break_Even_5%", "Precio_Lazy_Sugerido", "Enlace_Optimo"
-        ] if c in df_filtrado.columns]
-
-        df_editor_padron = df_filtrado[cols_mostrar].head(200).copy()
-        df_editor_padron.insert(0, "Comprar_1Clic", False)
-
-        edicion_padron = st.data_editor(
-            df_editor_padron, use_container_width=True, hide_index=True,
-            disabled=[c for c in df_editor_padron.columns if c != "Comprar_1Clic"],
-            column_config={
-                "Comprar_1Clic": st.column_config.CheckboxColumn("🛒 Comprar"),
-                "Precio_Actual": st.column_config.NumberColumn("💰 Mejor Precio", format="%d mnds"),
-                "Variacion_Bruta_%": st.column_config.NumberColumn("📊 Var %", format="%+.1f%%"),
-                "Puja_Max_10%_ROI": st.column_config.NumberColumn("🔨 Puja Máx", format="%d mnds"),
-                "Precio_Lazy_Sugerido": st.column_config.NumberColumn("🎯 Lazy 1h", format="%d mnds"),
-                "Enlace_Optimo": st.column_config.LinkColumn("🔗 Link", display_text="Ver Carta")
-            }
-        )
-
-        seleccionadas_1clic = edicion_padron[edicion_padron["Comprar_1Clic"] == True]
-        if not seleccionadas_1clic.empty:
-            if st.button(f"📥 Enviar {len(seleccionadas_1clic)} carta(s) a Mi Cartera (Nube)"):
-                df_c_act = datos.get("Mi_Cartera", pd.DataFrame())
-                nuevas_filas = []
-                for _, r_sel in seleccionadas_1clic.iterrows():
-                    nom_limpio = str(r_sel["Jugador"]).split(" (")[0].strip()
-                    p_compra_1c = int(r_sel["Precio_Actual"])
-                    est_auto = autodetectar_estrategia(r_sel["Jugador"], p_compra_1c)
-                    nuevas_filas.append({
-                        "Jugador_Exacto": nom_limpio,
-                        "Estrategia": est_auto,
-                        "Precio_Pagado": p_compra_1c,
-                        "Estado": "Activo",
-                        "Precio_Venta": 0,
-                        "Costo_EA_Tax": 0,
-                        "Ganancia_Neta": 0,
-                        "ROI_%": 0.0,
-                        "Fecha_Compra": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "Fecha_Venta": ""
-                    })
-                df_c_act = pd.concat([df_c_act, pd.DataFrame(nuevas_filas)], ignore_index=True)
-                guardar_hoja_sincronizada(df_c_act, "Mi_Cartera")
-                st.cache_data.clear()
-                st.success("¡Cartas sincronizadas en Google Sheets!")
-                st.rerun()
-
 with tab3:
     st.subheader("🎯 Gestor Visual de Alertas Sniper (Sincronizado en Nube)")
     col_al1, col_al2 = st.columns([1, 2])
@@ -693,30 +584,6 @@ with tab3:
                 guardar_hoja_sincronizada(df_al_act, "Mis_Alertas")
                 st.cache_data.clear()
                 st.rerun()
-
-    with col_al2:
-        df_alertas_w = datos.get("Mis_Alertas", pd.DataFrame())
-        activas_al = df_alertas_w[df_alertas_w["Estado"] == "Activa"].copy() if not df_alertas_w.empty and "Estado" in df_alertas_w.columns else pd.DataFrame()
-        if not activas_al.empty:
-            st.dataframe(activas_al, use_container_width=True, hide_index=True)
-            if st.button("🗑️ Limpiar Alertas Activas"):
-                df_alertas_w.loc[df_alertas_w["Estado"] == "Activa", "Estado"] = "Cancelada"
-                guardar_hoja_sincronizada(df_alertas_w, "Mis_Alertas")
-                st.cache_data.clear()
-                st.rerun()
-
-    st.markdown("---")
-    c_m1, c_m2 = st.columns(2)
-    with c_m1:
-        st.subheader("🧱 Radar de Medias SBC (Fodder)")
-        df_fod = datos.get("Radar_Fodder", pd.DataFrame())
-        if not df_fod.empty:
-            st.dataframe(df_fod, use_container_width=True, hide_index=True)
-    with c_m2:
-        st.subheader("🖤 Radar TOTW en Piso")
-        df_tw = datos.get("Radar_TOTW", pd.DataFrame())
-        if not df_tw.empty:
-            st.dataframe(df_tw, use_container_width=True, hide_index=True)
 
 with tab4:
     df_ia = datos.get("Recomendacion_IA", pd.DataFrame())
