@@ -189,8 +189,8 @@ def cargar_datos_completos():
                     hojas[h] = pd.DataFrame()
             if not hojas.get("Historial_Tendencias", pd.DataFrame()).empty:
                 return hojas, "☁️ Conectado a Google Sheets (Nube 24/7)"
-        except Exception:
-            pass
+        except Exception as e:
+            st.error(f"Error detallado Google Sheets: {e}")
 
     if os.path.exists(ARCHIVO_EXCEL):
         for h in nombres_hojas:
@@ -292,7 +292,7 @@ with st.sidebar:
     st.caption(estado_conexion)
     c_sb1, c_sb2 = st.columns(2)
     with c_sb1:
-        if st.button("🔄 Sincronizar", width="stretch"):
+        if st.button("🔄 Sincronizar", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
     with c_sb2:
@@ -323,7 +323,7 @@ with st.sidebar:
         jug_c = st.text_input("Nombre del Jugador", placeholder="Ej: Odegaard")
         precio_c = st.number_input("Precio Pagado (Monedas)", min_value=200, max_value=2000000, step=250, value=10000)
         est_c = st.selectbox("Unidad de Negocio", ["Flipping Meta", "Fodder SBC", "TOTW / IF", "Evolución / Hype"])
-        btn_guardar_c = st.form_submit_button("✅ Guardar en Nube", width="stretch")
+        btn_guardar_c = st.form_submit_button("✅ Guardar en Nube", use_container_width=True)
 
         if btn_guardar_c and jug_c.strip():
             df_c_act = datos.get("Mi_Cartera", pd.DataFrame())
@@ -354,7 +354,7 @@ with st.sidebar:
             opciones_v = [f"{idx} | {r['Jugador_Exacto']} (Costo: {int(r['Precio_Pagado']):,})" for idx, r in activos_sb.iterrows()]
             seleccion_v = st.selectbox("Carta a Vender", opciones_v)
             precio_v = st.number_input("Precio de Venta Bruto", min_value=200, max_value=2000000, step=250, value=15000)
-            btn_vender = st.form_submit_button("📈 Registrar Venta (5% Tax)", width="stretch")
+            btn_vender = st.form_submit_button("📈 Registrar Venta (5% Tax)", use_container_width=True)
 
             if btn_vender:
                 idx_real = int(seleccion_v.split(" | ")[0])
@@ -402,7 +402,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 if not datos:
-    st.warning("⚠️ No se encontraron datos en Google Sheets ni en el Excel local. Corré `python migrar_nube.py` primero.")
+    st.warning("⚠️ No se encontraron datos en Google Sheets ni en el Excel local.")
     st.stop()
 
 # ==========================================
@@ -511,7 +511,7 @@ with tab1:
             .map(colorear_accion, subset=["Acción_Sugerida"])
         )
         st.dataframe(
-            styled_viva, width="stretch", hide_index=True,
+            styled_viva, use_container_width=True, hide_index=True,
             column_config={
                 "Costo_Pagado": st.column_config.NumberColumn("💵 Costo", format="%d mnds"),
                 "Empate_5%": st.column_config.NumberColumn("⚖️ Empate (5%)", format="%d mnds"),
@@ -536,7 +536,7 @@ with tab1:
                 color_discrete_sequence=["#2979ff", "#ff5252", "#00e676"]
             )
             fig_bar.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig_bar, width="stretch")
+            st.plotly_chart(fig_bar, use_container_width=True)
 
     with col_g2:
         if not vendidos.empty:
@@ -549,7 +549,7 @@ with tab1:
                 color_discrete_sequence=["#00e676"]
             )
             fig_curva.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig_curva, width="stretch")
+            st.plotly_chart(fig_curva, use_container_width=True)
 
     col_pnl1, col_pnl2 = st.columns([1, 1])
     with col_pnl1:
@@ -571,12 +571,12 @@ with tab1:
             {"Rubro Contable": "⚖️ Resultado por Tenencia (No Realizado)", "Monto (Monedas)": tenencia_total},
         ])
         styled_er = df_estado_resultados.style.map(colorear_accion, subset=["Rubro Contable"]).map(colorear_neto_y_roi, subset=["Monto (Monedas)"])
-        st.dataframe(styled_er, width="stretch", hide_index=True, column_config={"Monto (Monedas)": st.column_config.NumberColumn("💰 Monedas", format="%+d mnds")})
+        st.dataframe(styled_er, use_container_width=True, hide_index=True, column_config={"Monto (Monedas)": st.column_config.NumberColumn("💰 Monedas", format="%+d mnds")})
 
     with col_pnl2:
         st.subheader("📜 Libro Mayor de Ventas Cerradas")
         if not vendidos.empty:
-            st.dataframe(vendidos.style.map(colorear_neto_y_roi, subset=["Ganancia_Neta", "ROI_%"]), width="stretch", hide_index=True)
+            st.dataframe(vendidos.style.map(colorear_neto_y_roi, subset=["Ganancia_Neta", "ROI_%"]), use_container_width=True, hide_index=True)
 
 with tab2:
     st.subheader("🔍 Lupa Visual Histórica (Evolución de Precio, Piso, Promedio y Zona de Puja)")
@@ -604,7 +604,7 @@ with tab2:
             fig_hist.add_hline(y=p_min_j, line_dash="dash", line_color="#00e676", annotation_text=f"Piso ({p_min_j:,})")
             fig_hist.add_hline(y=puja_j, line_dash="dashdot", line_color="#ffd600", annotation_text=f"Puja Máx ({puja_j:,})")
             fig_hist.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=340)
-            st.plotly_chart(fig_hist, width="stretch")
+            st.plotly_chart(fig_hist, use_container_width=True)
 
     st.markdown("---")
     st.subheader("⚡ Padrón Dual Interactivo (Tildá 🛒 y envialas directo a la Nube con 1 Clic)")
@@ -640,7 +640,7 @@ with tab2:
         df_editor_padron.insert(0, "Comprar_1Clic", False)
 
         edicion_padron = st.data_editor(
-            df_editor_padron, width="stretch", hide_index=True,
+            df_editor_padron, use_container_width=True, hide_index=True,
             disabled=[c for c in df_editor_padron.columns if c != "Comprar_1Clic"],
             column_config={
                 "Comprar_1Clic": st.column_config.CheckboxColumn("🛒 Comprar"),
@@ -686,7 +686,7 @@ with tab3:
         with st.form("form_alerta_web", clear_on_submit=True):
             jug_al = st.text_input("Jugador a vigilar", placeholder="Ej: Theo Hernandez")
             obj_al = st.number_input("Precio Objetivo (<=)", min_value=200, max_value=2000000, step=250, value=15000)
-            if st.form_submit_button("🎯 Activar Sniper", width="stretch") and jug_al.strip():
+            if st.form_submit_button("🎯 Activar Sniper", use_container_width=True) and jug_al.strip():
                 df_al_act = datos.get("Mis_Alertas", pd.DataFrame())
                 nueva_al = pd.DataFrame([{"Jugador_Buscado": jug_al.strip().title(), "Precio_Objetivo": int(obj_al), "Estado": "Activa"}])
                 df_al_act = pd.concat([df_al_act, nueva_al], ignore_index=True)
@@ -698,7 +698,7 @@ with tab3:
         df_alertas_w = datos.get("Mis_Alertas", pd.DataFrame())
         activas_al = df_alertas_w[df_alertas_w["Estado"] == "Activa"].copy() if not df_alertas_w.empty and "Estado" in df_alertas_w.columns else pd.DataFrame()
         if not activas_al.empty:
-            st.dataframe(activas_al, width="stretch", hide_index=True)
+            st.dataframe(activas_al, use_container_width=True, hide_index=True)
             if st.button("🗑️ Limpiar Alertas Activas"):
                 df_alertas_w.loc[df_alertas_w["Estado"] == "Activa", "Estado"] = "Cancelada"
                 guardar_hoja_sincronizada(df_alertas_w, "Mis_Alertas")
@@ -711,12 +711,12 @@ with tab3:
         st.subheader("🧱 Radar de Medias SBC (Fodder)")
         df_fod = datos.get("Radar_Fodder", pd.DataFrame())
         if not df_fod.empty:
-            st.dataframe(df_fod, width="stretch", hide_index=True)
+            st.dataframe(df_fod, use_container_width=True, hide_index=True)
     with c_m2:
         st.subheader("🖤 Radar TOTW en Piso")
         df_tw = datos.get("Radar_TOTW", pd.DataFrame())
         if not df_tw.empty:
-            st.dataframe(df_tw, width="stretch", hide_index=True)
+            st.dataframe(df_tw, use_container_width=True, hide_index=True)
 
 with tab4:
     df_ia = datos.get("Recomendacion_IA", pd.DataFrame())
