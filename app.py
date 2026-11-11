@@ -116,83 +116,45 @@ NOMBRE_SHEET = "Base_Datos_FC27"
 PRESUPUESTO_TOPE = 200000
 
 # ==========================================
-# CREDENCIALES AUTO-REPARADAS INTEGRADAS
-# ==========================================
-CREDENCIALES_RESPALDO = {
-    "type": "service_account",
-    "project_id": "savvy-folio-436717-j1",
-    "private_key_id": "DcJHrrHSgvFpsYxqb6g97uaQTd2kE31rPUeDZTeDsjVq",
-    "private_key": (
-        "-----BEGIN PRIVATE KEY-----\n"
-        "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQD8xlJfRIvlxJJn\n"
-        "9vcsVFhDhyTLFxAXMiiIEShIXcG+/FOt+N6U31KZ2JIkSvwh10CqE4STpHArxBxZ\n"
-        "d5uYEp7pK1L5P1EA2xdi2v7U0QwuK6os4GZk60bufGcAryQVR24fdFjMI8s2i4GW\n"
-        "DlQCgjZC6rG7f0uII7riQBBpB1FZYLtW5botilToX6fci7oxjAXdps4r6r7C6KsT\n"
-        "Yfx41P/90ookItreZQEWJo7eG3IE638txVHWXD8VlvPLVel45ZudHkUpNmRZGeAN\n"
-        "pUm6xeD5cgbcx01SoM7Ffng7HIEOftpE/wxrXMfg0tO3+0dPuyTzC3hmG2V2K034\n"
-        "JIaMbXHjAgMBAAECggEAVfzJDKtuw6zI+SDkGGpg1Cfm9kdUK+/eJdtgTq3GOMfx\n"
-        "V18vqIkHuloX7MytVH26+6BEG0128wx1cGHlxiefc0ZPpYZKcfYV0IUa5x5t/E7S\n"
-        "Rw3XB0GaEYq0J2Fs7ugrp/uWMWuDt3xhisA5B9lvx/e6mkPFV/x/mHOeoXvhynsW\n"
-        "bRZpFicr2DwO9b9y87EjtHQP6CpnSn9IcF7d64Jg3cNi3fidz9JlUF9vuZjswhaE\n"
-        "dzgtHo4vcrLU2T4haw/d4pNoHqkiUqsKMtHmAaplDTXTlG0/Wil3ESQ4NLFeIFx9\n"
-        "kxJRkROMJmelYWK++ZGwejRG5/S6MBS53I+ouvhQ4QKBgQD/MbFmRxb9cUEqZk3L\n"
-        "lxp9g9Hh51fYE8FIs1wbOn2YSrst8CEjIXyhfc8yr7zg6+fGt1trVhp+iVN3Nitm\n"
-        "Nm4EsCyKngYpGvHmvrELveVrodzkFKiV8SttQ6U+SUCYxmwH5/rrJnlLiiMEE3oK\n"
-        "+9KUfyal86aunMrq9HjyDcJHrrHSgvFpsYxqb6g97uaQTd2kE31rPUeDZTeDsjVq\n"
-        "MYZwblwKND+FKJk/quZuZjLAXn+QiO9vdQ0jNtfVb8hlIjveB6MNj9lUvEZh0+Ct\n"
-        "kZmKZmxP3c7FYHc6qPzXlytEi2PyjOUe2DS9w+B2jUGCPGY5RQq8o+I8tQ+d98XT\n"
-        "1KRIoj35iQKBgDKj3M0r/D7s036jcHqfEI2ps+N9MexZ9zgDB5sLn1KyObSi+yBq\n"
-        "i73MJmqrfvKvPX4scoK5Qmarv5lfcXtF/80EXMJhG13az/f3DVEELNuP8jJ8evvO\n"
-        "MMzs6ISUqrHmZhenjB5PszAvSEWNy+EUGbSICtZRpFjwGkBHpRyMyrkDAoGASSZ4\n"
-        "3rMU54keTwQEr0FEzj1uiByWiTVOT+xTljegAamU8XsGyqEonIyK84fPUQjP2d1w\n"
-        "jsoRdZcrvlEj6CdX2F+5GIK/4xTWafvoyU5GzLt2HOZ5PsjlN+R6LOnxSVVv+3fv\n"
-        "rxbEuC6DyWhXLQpH0KeOamjpOm7x+OwNAI8dRdECgYEA4+eckmuBifaI25Ujf/Aj\n"
-        "hzw32RFkx6I9m0Re7h4sd1g0zDBNrsHWfXANuMvuikCQ3uKAiA7LflfJywBTbLvq\n"
-        "d+rCA4nRtPGzbAsFTjW0ThBEaLBVQ7r+i8aZx+8lYdgQ13NW0o3NQUgC79Ik8Z9c\n"
-        "p5vMk+AM0ObPtTgVqfJjwwA=\n"
-        "-----END PRIVATE KEY-----\n"
-    ),
-    "client_email": "bot-trading@savvy-folio-436717-j1.iam.gserviceaccount.com",
-    "client_id": "104516374280078977247",
-    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-    "token_uri": "https://oauth2.googleapis.com/token",
-    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/bot-trading%40savvy-folio-436717-j1.iam.gserviceaccount.com",
-    "universe_domain": "googleapis.com"
-}
-
-# ==========================================
 # CONEXIÓN A GOOGLE SHEETS (NUBE + LOCAL)
 # ==========================================
 def obtener_cliente_gsheets():
-    # 1. Intentar primero con la llave auto-reparada integrada
-    try:
-        return gspread.service_account_from_dict(CREDENCIALES_RESPALDO)
-    except Exception:
-        pass
+    errores = []
+    # 1. Prioridad máxima: Archivo JSON directo en el repositorio (Cero errores de copiado)
+    if os.path.exists(ARCHIVO_CRED):
+        try:
+            return gspread.service_account(filename=ARCHIVO_CRED), None
+        except Exception as e:
+            errores.append(f"Error en {ARCHIVO_CRED}: {e}")
 
-    # 2. Intentar con st.secrets limpiando posibles errores de formato
+    # 2. Respaldo: Streamlit Secrets
     try:
         if "gcp_service_account" in st.secrets:
             cred_dict = dict(st.secrets["gcp_service_account"])
-            pk = cred_dict.get("private_key", "")
-            pk = pk.replace("\\n", "\n").replace("==\n-----END", "=\n-----END").replace("==-----END", "=-----END")
-            cred_dict["private_key"] = pk
-            return gspread.service_account_from_dict(cred_dict)
-    except Exception:
-        pass
+            return gspread.service_account_from_dict(cred_dict), None
+    except Exception as e:
+        errores.append(f"Error en Secrets: {e}")
 
-    # 3. Intentar con archivo local en PC
-    if os.path.exists(ARCHIVO_CRED):
-        try:
-            return gspread.service_account(filename=ARCHIVO_CRED)
-        except Exception:
-            pass
+    return None, " | ".join(errores) if errores else "No se encontró credenciales_google.json en GitHub ni Secrets válidos."
 
-    return None
+def leer_pestana_segura(ws):
+    valores = ws.get_all_values()
+    if not valores or len(valores) < 2:
+        return pd.DataFrame()
+    encabezados = [str(c).strip() for c in valores[0]]
+    # Ignorar columnas al final que no tengan título en la fila 1
+    indices_validos = [i for i, h in enumerate(encabezados) if h != ""]
+    if not indices_validos:
+        return pd.DataFrame()
+    cols_limpias = [encabezados[i] for i in indices_validos]
+    filas_limpias = []
+    for fila in valores[1:]:
+        if any(str(celda).strip() != "" for celda in fila):
+            filas_limpias.append([fila[i] if i < len(fila) else "" for i in indices_validos])
+    return pd.DataFrame(filas_limpias, columns=cols_limpias)
 
 def guardar_hoja_sincronizada(df_guardar, nombre_hoja):
-    gc = obtener_cliente_gsheets()
+    gc, _ = obtener_cliente_gsheets()
     if gc:
         try:
             sh = gc.open(NOMBRE_SHEET)
@@ -225,45 +187,44 @@ def convertir_columnas_numericas(df):
     ]
     for c in cols_num:
         if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+            s = df[c].astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False).str.strip()
+            df[c] = pd.to_numeric(s, errors="coerce").fillna(0)
     return df
 
 @st.cache_data(ttl=30)
-def cargar_datos_completos():
+def descargar_hojas_nube():
     hojas = {}
     nombres_hojas = [
         "Mi_Cartera", "Historial_Tendencias", "Recomendacion_IA",
         "Dashboard_Financiero", "Radar_Fodder", "Arbitraje_FUTGG",
         "Radar_Evos", "Radar_TOTW", "Radar_Links_Domino", "Mis_Alertas"
     ]
-    gc = obtener_cliente_gsheets()
-    if gc:
-        try:
-            sh = gc.open(NOMBRE_SHEET)
-            for h in nombres_hojas:
-                try:
-                    ws = sh.worksheet(h)
-                    registros = ws.get_all_records()
-                    df_h = pd.DataFrame(registros)
-                    hojas[h] = convertir_columnas_numericas(df_h)
-                except Exception:
-                    hojas[h] = pd.DataFrame()
-            if not hojas.get("Historial_Tendencias", pd.DataFrame()).empty:
-                return hojas, "☁️ Conectado a Google Sheets (Nube 24/7)"
-        except Exception as e:
-            st.error(f"🔴 Error al abrir la planilla '{NOMBRE_SHEET}': {e}")
+    gc, err_auth = obtener_cliente_gsheets()
+    if not gc:
+        return {}, f"Fallo de autenticación: {err_auth}"
 
-    if os.path.exists(ARCHIVO_EXCEL):
+    try:
+        sh = gc.open(NOMBRE_SHEET)
+        pestanas_reales = [w.title for w in sh.worksheets()]
         for h in nombres_hojas:
-            try:
-                hojas[h] = convertir_columnas_numericas(pd.read_excel(ARCHIVO_EXCEL, sheet_name=h))
-            except Exception:
+            if h in pestanas_reales:
+                ws = sh.worksheet(h)
+                df_h = leer_pestana_segura(ws)
+                hojas[h] = convertir_columnas_numericas(df_h)
+            else:
                 hojas[h] = pd.DataFrame()
-        return hojas, "💻 Conectado a Excel Local"
+        return hojas, "OK"
+    except Exception as e:
+        return {}, f"Error al abrir '{NOMBRE_SHEET}': {e}"
 
-    return {}, "⚠️ Sin conexión a datos"
-
-datos, estado_conexion = cargar_datos_completos()
+hojas_nube, msg_nube = descargar_hojas_nube()
+if msg_nube == "OK" and any(not df.empty for df in hojas_nube.values()):
+    datos = hojas_nube
+    estado_conexion = "☁️ Conectado a Google Sheets (Nube 24/7)"
+else:
+    datos = {}
+    estado_conexion = "⚠️ Sin conexión a datos"
+    st.error(f"🔍 Diagnóstico en vivo: {msg_nube}")
 
 # ==========================================
 # FUNCIONES MATEMÁTICAS Y DE COLOR
