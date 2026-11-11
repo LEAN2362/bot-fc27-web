@@ -7,15 +7,24 @@ import re
 import math
 import time
 import traceback
-import gspread
+from urllib.parse import quote
 from datetime import datetime, timedelta
 
+# ==========================================
+# CONFIGURACIÓN DE PÁGINA
+# ==========================================
 st.set_page_config(
     page_title="FC27 Trading Terminal Pro (Cloud)",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ⬇️ PEGÁ ACÁ ENTRE LAS COMILLAS EL VÍNCULO DE TU GOOGLE SHEETS ("Copiar vínculo") ⬇️
+LINK_GOOGLE_SHEET = "https://docs.google.com/spreadsheets/d/1JDSpJGB6SaPe53cTMMKCdr-OMzzDZPnPsXc4YiS1DjE/edit?usp=sharing"
+
+PRESUPUESTO_TOPE = 200000
+ARCHIVO_EXCEL = "Lista_Jugadores_FC27.xlsx"
 
 st.markdown("""
 <style>
@@ -94,10 +103,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-ARCHIVO_CRED = "credenciales_google.json"
-NOMBRE_SHEET = "Base_Datos_FC27"
-PRESUPUESTO_TOPE = 200000
-
+# ==========================================
+# FUNCIONES MATEMÁTICAS Y AUXILIARES
+# ==========================================
 def num_seguro(val, defecto=0):
     try:
         if pd.isna(val) or str(val).strip() == "":
@@ -139,45 +147,22 @@ def calcular_countdown_15hs():
     minutos, _ = divmod(rem, 60)
     return f"{horas:02d}h {minutos:02d}m", estado_drop
 
-def obtener_cliente_gsheets():
-    if os.path.exists(ARCHIVO_CRED):
-        try:
-            return gspread.service_account(filename=ARCHIVO_CRED), None
-        except Exception as e:
-            return None, f"Error leyendo '{ARCHIVO_CRED}': {e}"
-    return None, f"No se encontró el archivo '{ARCHIVO_CRED}' en tu repositorio de GitHub. Subilo con el botón 'Add file' -> 'Upload files'."
-
-def leer_pestana_segura(ws):
-    valores = ws.get_all_values()
-    if not valores or len(valores) < 2:
-        return pd.DataFrame()
-    encabezados = [str(c).strip() for c in valores[0]]
-    indices_validos = [i for i, h in enumerate(encabezados) if h != ""]
-    if not indices_validos:
-        return pd.DataFrame()
-    cols_limpias = []
-    usados = {}
-    for i in indices_validos:
-        nombre_col = encabezados[i]
-        if nombre_col in usados:
-            usados[nombre_col] += 1
-            nombre_col = f"{nombre_col}_{usados[nombre_col]}"
-        else:
-            usados[nombre_col] = 0
-        cols_limpias.append(nombre_col)
-
-    filas_limpias = []
-    for fila in valores[1:]:
-        if any(str(celda).strip() != "" for celda in fila):
-            filas_limpias.append([fila[i] if i < len(fila) else "" for i in indices_validos])
-    return pd.DataFrame(filas_limpias, columns=cols_limpias)
+def extraer_id_sheet(url_o_id):
+    texto = str(url_o_id).strip()
+    if not texto:
+        return ""
+    m = re.search(r"/d/([a-zA-Z0-9-_]+)", texto)
+    if m:
+        return m.group(1)
+    return texto
 
 def convertir_columnas_numericas(df):
     cols_num = [
         "Precio_Pagado", "Precio_Venta", "Costo_EA_Tax", "Ganancia_Neta", "ROI_%",
         "Precio_Anterior", "Precio_Actual", "Precio_Futbin", "Precio_FUTGG",
         "Precio_Min_Hist", "Precio_Prom_Hist", "Puja_Max_10%_ROI", "Break_Even_5%",
-        "Precio_Lazy_Sugerido", "Variacion_Bruta_%", "Beneficio_Neto_Mnds", "Variacion_Neta_%"
+        "Precio_Lazy_Sugerido", "Variacion_Bruta_%", "Beneficio_Neto_Mnds", "Variacion_Neta_%",
+        "Precio_Objetivo"
     ]
     for c in cols_num:
         if c in df.columns:
@@ -185,62 +170,73 @@ def convertir_columnas_numericas(df):
             df[c] = pd.to_numeric(s, errors="coerce").fillna(0)
     return df
 
-def guardar_hoja_sincronizada(df_guardar, nombre_hoja):
-    gc, _ = obtener_cliente_gsheets()
-    if gc:
-        try:
-            sh = gc.open(NOMBRE_SHEET)
-            try:
-                ws = sh.worksheet(nombre_hoja)
-                ws.clear()
-            except Exception:
-                ws = sh.add_worksheet(title=nombre_hoja, rows="500", cols="20")
-            df_clean = df_guardar.fillna("")
-            datos_lista = [df_clean.columns.values.tolist()] + df_clean.astype(str).values.tolist()
-            ws.update(datos_lista)
-        except Exception as e:
-            st.warning(f"Aviso sincronizando nube: {e}")
-
+# ==========================================
+# LECTURA DIRECTA SIN CREDENCIALES NI SECRETS
+# ==========================================
 @st.cache_data(ttl=30)
-def descargar_hojas_nube():
+def cargar_por_id_publico(sheet_id):
     hojas = {}
     nombres_hojas = [
-        "Mi_Cartera", "Historial_Tendencias", "Recomendacion_IA",
+        "Historial_Tendencias", "Mi_Cartera", "Recomendacion_IA",
         "Dashboard_Financiero", "Radar_Fodder", "Arbitraje_FUTGG",
         "Radar_Evos", "Radar_TOTW", "Radar_Links_Domino", "Mis_Alertas"
     ]
-    gc, err_auth = obtener_cliente_gsheets()
-    if not gc:
-        return {}, err_auth
+    df_base_comparacion = None
 
-    try:
-        sh = gc.open(NOMBRE_SHEET)
-        pestanas_reales = [w.title for w in sh.worksheets()]
-        for h in nombres_hojas:
-            if h in pestanas_reales:
-                try:
-                    ws = sh.worksheet(h)
-                    df_h = leer_pestana_segura(ws)
-                    hojas[h] = convertir_columnas_numericas(df_h)
-                except Exception:
-                    hojas[h] = pd.DataFrame()
+    for h in nombres_hojas:
+        url_csv = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={quote(h)}"
+        try:
+            df_h = pd.read_csv(url_csv)
+            df_h = df_h.loc[:, ~df_h.columns.str.contains("^Unnamed")]
+            if h == "Historial_Tendencias":
+                df_base_comparacion = df_h.copy()
+                hojas[h] = convertir_columnas_numericas(df_h)
             else:
-                hojas[h] = pd.DataFrame()
+                # Si Google devuelve la primera hoja por defecto porque la pestaña no existe, la descartamos
+                if (
+                    df_base_comparacion is not None
+                    and list(df_h.columns) == list(df_base_comparacion.columns)
+                    and len(df_h) == len(df_base_comparacion)
+                ):
+                    hojas[h] = pd.DataFrame()
+                else:
+                    hojas[h] = convertir_columnas_numericas(df_h)
+        except Exception:
+            hojas[h] = pd.DataFrame()
+
+    if not hojas.get("Historial_Tendencias", pd.DataFrame()).empty:
         return hojas, "OK"
-    except Exception as e:
-        return {}, f"Error abriendo '{NOMBRE_SHEET}': {e}"
+    return {}, "No se pudo leer 'Historial_Tendencias'. Verificá que en 'Compartir' diga 'Cualquier persona con el vínculo'."
 
+# ==========================================
+# EJECUCIÓN PRINCIPAL
+# ==========================================
 try:
-    hojas_nube, msg_nube = descargar_hojas_nube()
-    if msg_nube == "OK" and any(not df.empty for df in hojas_nube.values()):
-        datos = hojas_nube
-        estado_conexion = "☁️ Conectado a Google Sheets (Nube 24/7)"
-    else:
-        datos = {}
-        estado_conexion = "⚠️ Sin conexión a datos"
-        if msg_nube != "OK":
-            st.error(f"🔍 Diagnóstico: {msg_nube}")
+    if "link_manual" not in st.session_state:
+        st.session_state["link_manual"] = LINK_GOOGLE_SHEET
 
+    link_activo = st.session_state["link_manual"] or LINK_GOOGLE_SHEET
+    sheet_id = extraer_id_sheet(link_activo)
+
+    datos = {}
+    msg_error = ""
+    estado_conexion = "⚠️ Sin conexión a datos"
+
+    if sheet_id:
+        datos, msg_error = cargar_por_id_publico(sheet_id)
+        if msg_error == "OK":
+            estado_conexion = "☁️ Conectado a Google Sheets (Nube 24/7)"
+
+    if not datos and os.path.exists(ARCHIVO_EXCEL):
+        for h in ["Historial_Tendencias", "Mi_Cartera", "Recomendacion_IA", "Radar_Fodder", "Radar_TOTW", "Mis_Alertas"]:
+            try:
+                datos[h] = convertir_columnas_numericas(pd.read_excel(ARCHIVO_EXCEL, sheet_name=h))
+            except Exception:
+                datos[h] = pd.DataFrame()
+        if not datos.get("Historial_Tendencias", pd.DataFrame()).empty:
+            estado_conexion = "💻 Conectado a Excel Local"
+
+    # BARRA LATERAL
     with st.sidebar:
         st.markdown("## 🛠️ Centro de Mando")
         st.caption(estado_conexion)
@@ -267,34 +263,7 @@ try:
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("---")
-        st.markdown("### ➕ Registrar Compra Manual")
-        with st.form("form_compra", clear_on_submit=True):
-            jug_c = st.text_input("Nombre del Jugador", placeholder="Ej: Odegaard")
-            precio_c = st.number_input("Precio Pagado (Monedas)", min_value=200, max_value=2000000, step=250, value=10000)
-            est_c = st.selectbox("Unidad de Negocio", ["Flipping Meta", "Fodder SBC", "TOTW / IF", "Evolución / Hype"])
-            btn_guardar_c = st.form_submit_button("✅ Guardar en Nube")
-
-            if btn_guardar_c and jug_c.strip():
-                df_c_act = datos.get("Mi_Cartera", pd.DataFrame())
-                nueva_fila = pd.DataFrame([{
-                    "Jugador_Exacto": jug_c.strip().title(),
-                    "Estrategia": est_c,
-                    "Precio_Pagado": int(precio_c),
-                    "Estado": "Activo",
-                    "Precio_Venta": 0,
-                    "Costo_EA_Tax": 0,
-                    "Ganancia_Neta": 0,
-                    "ROI_%": 0.0,
-                    "Fecha_Compra": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "Fecha_Venta": ""
-                }])
-                df_c_act = pd.concat([df_c_act, nueva_fila], ignore_index=True)
-                guardar_hoja_sincronizada(df_c_act, "Mi_Cartera")
-                st.cache_data.clear()
-                st.success(f"¡{jug_c.title()} sincronizado en la nube!")
-                st.rerun()
-
+    # CABECERA PRINCIPAL
     df_historial = datos.get("Historial_Tendencias", pd.DataFrame())
     ultima_act = str(df_historial["Fecha"].max()) if not df_historial.empty and "Fecha" in df_historial.columns else "Sin escaneo"
     df_ult_corte = df_historial[df_historial["Fecha"] == ultima_act].copy() if not df_historial.empty and "Fecha" in df_historial.columns else pd.DataFrame()
@@ -314,10 +283,19 @@ try:
     </div>
     """, unsafe_allow_html=True)
 
+    # SI TODAVÍA NO PUSO EL LINK, MOSTRAR CAJA DIRECTA EN PANTALLA
     if not datos:
-        st.warning("⚠️ Seguí los pasos del cartel rojo de arriba para conectar tus datos.")
+        if msg_error and msg_error != "OK":
+            st.error(f"🔍 {msg_error}")
+        st.info("👇 **Conexión instantánea sin llaves:** En tu Google Sheets `Base_Datos_FC27`, tocá **Compartir** ➡️ cambiá 'Restringido' a **'Cualquier persona con el vínculo'** ➡️ tocá **Copiar vínculo** y pegalo acá abajo:")
+        nuevo_link = st.text_input("🔗 Pegá acá el vínculo de tu Google Sheets:", value=link_activo, placeholder="https://docs.google.com/spreadsheets/d/...")
+        if st.button("🚀 Conectar ahora"):
+            st.session_state["link_manual"] = nuevo_link.strip()
+            st.cache_data.clear()
+            st.rerun()
         st.stop()
 
+    # TARJETAS KPI
     df_cartera = datos.get("Mi_Cartera", pd.DataFrame())
     if not df_cartera.empty and "Estado" in df_cartera.columns:
         activos = df_cartera[df_cartera["Estado"].astype(str).str.strip() == "Activo"].copy()
@@ -416,7 +394,15 @@ try:
 
         st.subheader("⚡ Padrón Completo en Nube")
         if not df_ult_corte.empty:
-            st.dataframe(df_ult_corte.head(250), hide_index=True)
+            c_f1, c_f2 = st.columns(2)
+            with c_f1:
+                busq = st.text_input("🔍 Buscar jugador:", placeholder="Ej: Mendy, Mbappe...")
+            with c_f2:
+                tope_p = st.slider("Precio Máximo:", min_value=500, max_value=200000, value=200000, step=2500)
+            df_mostrar = df_ult_corte[df_ult_corte["Precio_Actual"] <= tope_p].copy()
+            if busq.strip():
+                df_mostrar = df_mostrar[df_mostrar["Jugador"].astype(str).str.lower().str.contains(busq.strip().lower(), na=False)]
+            st.dataframe(df_mostrar.head(250), hide_index=True)
 
     with tab3:
         c_m1, c_m2 = st.columns(2)
