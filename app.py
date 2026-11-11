@@ -10,9 +10,6 @@ import traceback
 import gspread
 from datetime import datetime, timedelta
 
-# ==========================================
-# CONFIGURACIÓN DE PÁGINA Y ESTÉTICA FULL COLOR
-# ==========================================
 st.set_page_config(
     page_title="FC27 Trading Terminal Pro (Cloud)",
     page_icon="⚡",
@@ -33,11 +30,6 @@ st.markdown("""
     section[data-testid="stSidebar"] * {
         color: #e6edf3 !important;
     }
-    section[data-testid="stSidebar"] input, section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
-        background-color: #1e2638 !important;
-        color: #ffffff !important;
-        border: 1px solid #3b4c6b !important;
-    }
     div.stButton > button, div[data-testid="stFormSubmitButton"] > button {
         background: linear-gradient(90deg, #00c853 0%, #00e676 50%, #00b0ff 100%) !important;
         color: #070a12 !important;
@@ -45,14 +37,12 @@ st.markdown("""
         border: none !important;
         border-radius: 10px !important;
         padding: 10px 16px !important;
-        box-shadow: 0 4px 15px rgba(0, 230, 118, 0.35) !important;
     }
     .main-header {
         background: linear-gradient(120deg, #0f2027 0%, #1c1042 50%, #004d40 100%);
         padding: 22px 28px;
         border-radius: 16px;
         border: 1px solid #00e676;
-        box-shadow: 0 8px 25px rgba(0, 230, 118, 0.18);
         margin-bottom: 20px;
         display: flex;
         justify-content: space-between;
@@ -63,9 +53,7 @@ st.markdown("""
         margin: 0;
         font-size: 1.95rem;
         font-weight: 900;
-        background: linear-gradient(90deg, #00e676, #00e5ff, #ffea00);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
+        color: #00e676;
     }
     .main-header p {
         margin: 6px 0 0 0;
@@ -85,10 +73,9 @@ st.markdown("""
         padding: 18px 20px;
         border-radius: 14px;
         color: white;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.35);
         margin-bottom: 10px;
     }
-    .kpi-title { font-size: 0.85rem; font-weight: 700; text-transform: uppercase; opacity: 0.92; margin-bottom: 6px; }
+    .kpi-title { font-size: 0.85rem; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
     .kpi-value { font-size: 1.7rem; font-weight: 900; margin-bottom: 8px; }
     .kpi-badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 700; background: rgba(0, 0, 0, 0.35); }
     .kpi-green { background: linear-gradient(135deg, #054f31 0%, #00a86b 100%); border: 1px solid #00e676; }
@@ -104,21 +91,13 @@ st.markdown("""
         margin-top: 8px;
         font-size: 0.88rem;
     }
-    div[data-baseweb="tab-list"] { gap: 8px; background-color: #111625; padding: 8px; border-radius: 12px; border: 1px solid #26334d; }
-    button[data-baseweb="tab"] { font-size: 0.95rem !important; font-weight: 700 !important; color: #94a3b8 !important; border-radius: 8px !important; padding: 10px 16px !important; }
-    button[data-baseweb="tab"][aria-selected="true"] { background: linear-gradient(90deg, #6200ea, #00b0ff) !important; color: #ffffff !important; }
-    h2, h3 { color: #38bdf8 !important; font-weight: 800 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-ARCHIVO_EXCEL = "Lista_Jugadores_FC27.xlsx"
 ARCHIVO_CRED = "credenciales_google.json"
 NOMBRE_SHEET = "Base_Datos_FC27"
 PRESUPUESTO_TOPE = 200000
 
-# ==========================================
-# FUNCIONES AUXILIARES SEGURAS
-# ==========================================
 def num_seguro(val, defecto=0):
     try:
         if pd.isna(val) or str(val).strip() == "":
@@ -154,46 +133,19 @@ def calcular_countdown_15hs():
         estado_drop = "🔥 Contenido de hoy ya activo"
     else:
         proximo_drop = drop_hoy
-        if ahora.hour == 14 and ahora.minute >= 30:
-            estado_drop = "🚨 ¡VENTANA PRE-DROP! (Comprar en pánico)"
-        else:
-            estado_drop = "⏳ Esperando Drop Diario EA"
+        estado_drop = "⏳ Esperando Drop Diario EA"
     resta = proximo_drop - ahora
     horas, rem = divmod(int(resta.total_seconds()), 3600)
     minutos, _ = divmod(rem, 60)
     return f"{horas:02d}h {minutos:02d}m", estado_drop
 
-def autodetectar_estrategia(nombre_carta, precio):
-    nom_u = str(nombre_carta).upper()
-    if any(k in nom_u for k in ["TOTW", "IN-FORM", "INFORM", " - IF)"]):
-        return "TOTW / IF"
-    m_med = re.search(r'MEDIA\s*(\d{2})', nom_u)
-    med = int(m_med.group(1)) if m_med else 0
-    if med >= 84 and precio <= 32000:
-        return "Fodder SBC"
-    if precio <= 15000:
-        return "Evolución / Hype"
-    return "Flipping Meta"
-
-# ==========================================
-# CONEXIÓN A GOOGLE SHEETS (NUBE + LOCAL)
-# ==========================================
 def obtener_cliente_gsheets():
-    errores = []
     if os.path.exists(ARCHIVO_CRED):
         try:
             return gspread.service_account(filename=ARCHIVO_CRED), None
         except Exception as e:
-            errores.append(f"Archivo JSON: {e}")
-
-    try:
-        if "gcp_service_account" in st.secrets:
-            cred_dict = dict(st.secrets["gcp_service_account"])
-            return gspread.service_account_from_dict(cred_dict), None
-    except Exception as e:
-        errores.append(f"Secrets: {e}")
-
-    return None, " | ".join(errores) if errores else "Subí 'credenciales_google.json' a GitHub o configurá Secrets."
+            return None, f"Error leyendo '{ARCHIVO_CRED}': {e}"
+    return None, f"No se encontró el archivo '{ARCHIVO_CRED}' en tu repositorio de GitHub. Subilo con el botón 'Add file' -> 'Upload files'."
 
 def leer_pestana_segura(ws):
     valores = ws.get_all_values()
@@ -225,9 +177,7 @@ def convertir_columnas_numericas(df):
         "Precio_Pagado", "Precio_Venta", "Costo_EA_Tax", "Ganancia_Neta", "ROI_%",
         "Precio_Anterior", "Precio_Actual", "Precio_Futbin", "Precio_FUTGG",
         "Precio_Min_Hist", "Precio_Prom_Hist", "Puja_Max_10%_ROI", "Break_Even_5%",
-        "Precio_Lazy_Sugerido", "Variacion_Bruta_%", "Beneficio_Neto_Mnds", "Variacion_Neta_%",
-        "Precio_Objetivo", "Margen_Neto_5%", "Brecha_%", "Subida_%", "Ganancia_Potencial_Neta",
-        "Precio_Mas_Barato", "Piso_Compra", "Techo_Venta", "Precio_Base", "Precio_Explosivo"
+        "Precio_Lazy_Sugerido", "Variacion_Bruta_%", "Beneficio_Neto_Mnds", "Variacion_Neta_%"
     ]
     for c in cols_num:
         if c in df.columns:
@@ -261,7 +211,7 @@ def descargar_hojas_nube():
     ]
     gc, err_auth = obtener_cliente_gsheets()
     if not gc:
-        return {}, f"Fallo de autenticación: {err_auth}"
+        return {}, err_auth
 
     try:
         sh = gc.open(NOMBRE_SHEET)
@@ -278,11 +228,8 @@ def descargar_hojas_nube():
                 hojas[h] = pd.DataFrame()
         return hojas, "OK"
     except Exception as e:
-        return {}, f"Error al abrir '{NOMBRE_SHEET}': {e}"
+        return {}, f"Error abriendo '{NOMBRE_SHEET}': {e}"
 
-# ==========================================
-# EJECUCIÓN PRINCIPAL PROTEGIDA (SIN PANTALLA "OH NO")
-# ==========================================
 try:
     hojas_nube, msg_nube = descargar_hojas_nube()
     if msg_nube == "OK" and any(not df.empty for df in hojas_nube.values()):
@@ -292,19 +239,14 @@ try:
         datos = {}
         estado_conexion = "⚠️ Sin conexión a datos"
         if msg_nube != "OK":
-            st.error(f"🔍 Diagnóstico de conexión: {msg_nube}")
+            st.error(f"🔍 Diagnóstico: {msg_nube}")
 
-    # BARRA LATERAL
     with st.sidebar:
         st.markdown("## 🛠️ Centro de Mando")
         st.caption(estado_conexion)
-        c_sb1, c_sb2 = st.columns(2)
-        with c_sb1:
-            if st.button("🔄 Sincronizar"):
-                st.cache_data.clear()
-                st.rerun()
-        with c_sb2:
-            auto_ref = st.toggle("⏱️ Auto 60s", value=False)
+        if st.button("🔄 Sincronizar"):
+            st.cache_data.clear()
+            st.rerun()
 
         st.markdown("---")
         st.markdown("### 🧮 Calculadora Rápida (5% Tax)")
@@ -353,7 +295,6 @@ try:
                 st.success(f"¡{jug_c.title()} sincronizado en la nube!")
                 st.rerun()
 
-    # CABECERA PRINCIPAL
     df_historial = datos.get("Historial_Tendencias", pd.DataFrame())
     ultima_act = str(df_historial["Fecha"].max()) if not df_historial.empty and "Fecha" in df_historial.columns else "Sin escaneo"
     df_ult_corte = df_historial[df_historial["Fecha"] == ultima_act].copy() if not df_historial.empty and "Fecha" in df_historial.columns else pd.DataFrame()
@@ -374,10 +315,9 @@ try:
     """, unsafe_allow_html=True)
 
     if not datos:
-        st.warning("⚠️ No se encontraron datos en Google Sheets ni en el Excel local.")
+        st.warning("⚠️ Seguí los pasos del cartel rojo de arriba para conectar tus datos.")
         st.stop()
 
-    # KPIs Y CARTERA
     df_cartera = datos.get("Mi_Cartera", pd.DataFrame())
     if not df_cartera.empty and "Estado" in df_cartera.columns:
         activos = df_cartera[df_cartera["Estado"].astype(str).str.strip() == "Activo"].copy()
@@ -418,13 +358,6 @@ try:
         roi_lat = round((tenencia / costo_a) * 100, 1) if costo_a > 0 else 0.0
         lazy_a = redondear_escalon_ea(max(p_mercado * 1.12, (costo_a * 1.10) / 0.95), hacia_arriba=True)
 
-        if roi_lat <= -10.0:
-            estado_op = "🛑 STOP-LOSS (Vender)"
-        elif tenencia > 0:
-            estado_op = "🚨 VENDER (En Ganancia)"
-        else:
-            estado_op = "⏳ HOLD / LAZY"
-
         filas_cartera_viva.append({
             "Jugador": nom_a,
             "Estrategia": est_a,
@@ -434,8 +367,7 @@ try:
             "Precio_Lazy_1h": lazy_a,
             "Stop_Loss": sl_a,
             "Resultado_Tenencia": tenencia,
-            "ROI_Latente_%": roi_lat,
-            "Acción_Sugerida": estado_op
+            "ROI_Latente_%": roi_lat
         })
 
     tenencia_total = vnr_total - cap_inmovilizado
@@ -443,23 +375,21 @@ try:
 
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
-        st.markdown(f"""<div class="kpi-card kpi-green"><div class="kpi-title">💵 Liquidez Disponible (Caja)</div><div class="kpi-value">{liquidez_disp:,} mnds</div><div class="kpi-badge">🟢 {round(liquidez_disp/PRESUPUESTO_TOPE*100)}% del presupuesto</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-green"><div class="kpi-title">💵 Liquidez Disponible</div><div class="kpi-value">{liquidez_disp:,} mnds</div><div class="kpi-badge">🟢 {round(liquidez_disp/PRESUPUESTO_TOPE*100)}% libre</div></div>""", unsafe_allow_html=True)
     with k2:
-        st.markdown(f"""<div class="kpi-card kpi-blue"><div class="kpi-title">📦 Capital Inmovilizado</div><div class="kpi-value">{cap_inmovilizado:,} mnds</div><div class="kpi-badge">🃏 {len(activos)} cartas en club</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-blue"><div class="kpi-title">📦 Capital Inmovilizado</div><div class="kpi-value">{cap_inmovilizado:,} mnds</div><div class="kpi-badge">🃏 {len(activos)} cartas</div></div>""", unsafe_allow_html=True)
     with k3:
-        st.markdown(f"""<div class="kpi-card {color_vnr}"><div class="kpi-title">📈 Stock a VNR (Post 5% Tax)</div><div class="kpi-value">{vnr_total:,} mnds</div><div class="kpi-badge">⚖️ Tenencia: {tenencia_total:+,} mnds</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card {color_vnr}"><div class="kpi-title">📈 Stock a VNR (Neto)</div><div class="kpi-value">{vnr_total:,} mnds</div><div class="kpi-badge">⚖️ Tenencia: {tenencia_total:+,}</div></div>""", unsafe_allow_html=True)
     with k4:
-        st.markdown(f"""<div class="kpi-card kpi-gold"><div class="kpi-title">💰 Ganancia Neta Realizada</div><div class="kpi-value">{ganancia_realizada:+,} mnds</div><div class="kpi-badge">📈 {len(vendidos)} ventas cerradas</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-gold"><div class="kpi-title">💰 Ganancia Realizada</div><div class="kpi-value">{ganancia_realizada:+,} mnds</div><div class="kpi-badge">📈 {len(vendidos)} ventas</div></div>""", unsafe_allow_html=True)
     with k5:
-        st.markdown(f"""<div class="kpi-card kpi-purple"><div class="kpi-title">🎯 Efectividad de Trading</div><div class="kpi-value">{efectividad}%</div><div class="kpi-badge">🏆 {aciertos}/{len(vendidos)} trades positivos</div></div>""", unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-purple"><div class="kpi-title">🎯 Efectividad</div><div class="kpi-value">{efectividad}%</div><div class="kpi-badge">🏆 {aciertos}/{len(vendidos)} positivos</div></div>""", unsafe_allow_html=True)
 
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Cartera, P&L & Curva Capital",
-        "⚡ Radar 1-Clic & Lupa Histórica",
-        "🎯 Alertas Sniper, Fodder & Evos",
-        "🔮 Oráculo & Reporte IA"
+        "📊 Cartera & P&L",
+        "⚡ Radar & Lupa Histórica",
+        "🎯 Fodder & TOTW",
+        "🔮 Oráculo IA"
     ])
 
     with tab1:
@@ -477,14 +407,13 @@ try:
         st.subheader("🔍 Lupa Visual Histórica")
         if not df_historial.empty and "Jugador" in df_historial.columns:
             lista_jugadores_unicos = sorted(df_historial["Jugador"].astype(str).unique().tolist())
-            jug_seleccionado = st.selectbox("Elegí un jugador para ver su gráfico histórico:", lista_jugadores_unicos)
+            jug_seleccionado = st.selectbox("Elegí un jugador:", lista_jugadores_unicos)
             if jug_seleccionado:
                 df_jug_hist = df_historial[df_historial["Jugador"] == jug_seleccionado].sort_values(by="Fecha")
                 fig_hist = px.line(df_jug_hist, x="Fecha", y="Precio_Actual", markers=True, title=f"Evolución: {jug_seleccionado}")
                 fig_hist.update_layout(template="plotly_dark")
                 st.plotly_chart(fig_hist)
 
-        st.markdown("---")
         st.subheader("⚡ Padrón Completo en Nube")
         if not df_ult_corte.empty:
             st.dataframe(df_ult_corte.head(250), hide_index=True)
@@ -492,12 +421,12 @@ try:
     with tab3:
         c_m1, c_m2 = st.columns(2)
         with c_m1:
-            st.subheader("🧱 Radar de Medias SBC (Fodder)")
+            st.subheader("🧱 Radar Fodder")
             df_fod = datos.get("Radar_Fodder", pd.DataFrame())
             if not df_fod.empty:
                 st.dataframe(df_fod, hide_index=True)
         with c_m2:
-            st.subheader("🖤 Radar TOTW en Piso")
+            st.subheader("🖤 Radar TOTW")
             df_tw = datos.get("Radar_TOTW", pd.DataFrame())
             if not df_tw.empty:
                 st.dataframe(df_tw, hide_index=True)
@@ -508,5 +437,5 @@ try:
             st.dataframe(df_ia, hide_index=True)
 
 except Exception as err_global:
-    st.error(f"🚨 Se detectó un error en la ejecución: {err_global}")
+    st.error(f"🚨 Error detectado: {err_global}")
     st.code(traceback.format_exc())
