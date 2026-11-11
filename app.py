@@ -21,7 +21,7 @@ st.set_page_config(
 )
 
 # ⬇️ PEGÁ ACÁ ENTRE LAS COMILLAS EL VÍNCULO DE TU GOOGLE SHEETS ("Copiar vínculo") ⬇️
-LINK_GOOGLE_SHEET = ""
+LINK_GOOGLE_SHEET = "https://docs.google.com/spreadsheets/d/1a2b3c4d5e.../edit?usp=sharing"
 
 PRESUPUESTO_TOPE = 200000
 ARCHIVO_EXCEL = "Lista_Jugadores_FC27.xlsx"
