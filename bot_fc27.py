@@ -37,11 +37,11 @@ ARCHIVO_CRED = "credenciales_google.json"
 NOMBRE_SHEET = "Base_Datos_FC27"
 
 # Parámetros de los 6 Motores de Trading Avanzado
-HORAS_TOPE_INMOVILIZACION = 72.0  # 72 hs (3 días) límite antes de sugerir Rotación de Capital
-STOP_LOSS_PCT = -10.0             # -10% neto activa alerta de Stop-Loss para proteger liquidez
-TAKE_PROFIT_1_PCT = 8.0           # +8% neto: Toma de ganancia rápida (Flipping)
-TAKE_PROFIT_2_PCT = 18.0          # +18% neto: Toma de ganancia máxima (Hype / SBC)
-MARGEN_LAZY_BUYER = 1.12          # +12% sobre precio actual para cazar compradores impacientes
+HORAS_TOPE_INMOVILIZACION = 72.0
+STOP_LOSS_PCT = -10.0
+TAKE_PROFIT_1_PCT = 8.0
+TAKE_PROFIT_2_PCT = 18.0
+MARGEN_LAZY_BUYER = 1.12
 
 MODELOS_PREFERIDOS = ["models/gemini-2.5-flash", "gemini-2.5-flash", "models/gemini-3.5-flash", "gemini-3.5-flash"]
 
@@ -59,7 +59,6 @@ UMBRAL_SUBIDA_EVO_PCT = 35.0
 TOPE_TOTW_DESCARTE = 16500
 
 def ahora_arg():
-    """Devuelve siempre la fecha y hora exacta de Argentina (UTC-3), incluso en servidores en la nube."""
     tz_arg = timezone(timedelta(hours=-3))
     return datetime.now(tz_arg).replace(tzinfo=None)
 
@@ -97,7 +96,7 @@ def sincronizar_todo_a_google_sheets(
 ):
     gc = obtener_cliente_gsheets()
     if not gc:
-        print("ℹ️ Sin archivo credenciales_google.json: se omitió subida a Google Sheets.")
+        print("ℹ️ Sin archivo credenciales_google.json válido: se guardó directo en Lista_Jugadores_FC27.xlsx.")
         return
     try:
         print(f"\n☁️ Subiendo base de datos actualizada a Google Sheets ('{NOMBRE_SHEET}')...")
@@ -278,6 +277,34 @@ def extraer_precio_robusto(texto_precio, texto_fila, presupuesto_max):
                 return val
     return 0
 
+def extraer_precio_carta_unica_gg(texto_card, presupuesto_max):
+    """Extrae el precio únicamente dentro del contenedor individual de una carta en FUT.GG."""
+    if not texto_card:
+        return 0
+    precios_km = re.findall(r'(\d+(?:\.\d+)?)\s*([KkMm])\b', texto_card)
+    for num_s, unidad in precios_km:
+        mult = 1000000 if unidad.upper() == 'M' else 1000
+        val = int(round(float(num_s) * mult))
+        if val > presupuesto_max:
+            return 0  # Descarta inmediatamente cartas de más de 200k (ej: Mbappé, R9)
+        if 200 <= val <= presupuesto_max:
+            return val
+
+    precios_comas = re.findall(r'\b(\d{1,3}(?:,\d{3})+)\b', texto_card)
+    for p_c in precios_comas:
+        val = int(p_c.replace(',', ''))
+        if val > presupuesto_max:
+            return 0
+        if 200 <= val <= presupuesto_max:
+            return val
+
+    enteros = re.findall(r'\b(\d{3,6})\b', texto_card)
+    for ent in enteros:
+        val = int(ent)
+        if 200 <= val <= presupuesto_max and (val % 50 == 0):
+            return val
+    return 0
+
 def calcular_estadisticas_historicas(df_viejo):
     stats = {}
     if df_viejo is None or df_viejo.empty or 'Enlace_Futbin' not in df_viejo.columns:
@@ -299,7 +326,7 @@ def calcular_estadisticas_historicas(df_viejo):
     return stats
 
 # ==========================================
-# MOTOR DE CLASIFICACIÓN DE TRADING: LIQUIDEZ, REBOTE Y CICLO WL
+# MOTOR DE CLASIFICACIÓN DE TRADING
 # ==========================================
 def diagnosticar_senal_trading(p_act, p_ant, min_hist, max_hist, prom_hist, muestras, p_fb, p_gg):
     var_reciente = (((p_act - p_ant) / p_ant) * 100.0) if p_ant > 0 else 0.0
@@ -477,7 +504,7 @@ def armar_resumen_flipping_gangas(datos_finales):
     return txt
 
 # ==========================================
-# FUSIÓN DE BASES: FUTBIN + FUT.GG PARA TODOS LOS MÓDULOS
+# FUSIÓN DE BASES: FUTBIN + FUT.GG
 # ==========================================
 def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_historicas, fecha_actual):
     mapa_gg_clave = {}
@@ -495,6 +522,7 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
     for jug in (jugadores_fb or []):
         enlace_fb = jug["Enlace"]
         p_fb = int(jug["Precio_Actual"])
+        p_con_fb = int(jug.get("Precio_Consola", p_fb) or p_fb)
         c = clave_cruce(jug["Jugador"])
 
         g = mapa_gg_clave.get(c)
@@ -569,6 +597,7 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
             "Jugador": jug["Jugador"],
             "Precio_Anterior": precio_anterior,
             "Precio_Actual": p_act,
+            "Precio_Consola": p_con_fb,
             "Precio_Futbin": p_fb,
             "Precio_FUTGG": p_gg,
             "Fuente_Mejor_Precio": fuente_optima,
@@ -594,7 +623,7 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
         if not enlace_gg or enlace_gg in claves_gg_usadas:
             continue
         p_gg = int(g.get("Precio_FUTGG", 0))
-        if p_gg <= 0:
+        if p_gg <= 0 or g.get("Media") == "??":
             continue
 
         exclusivos_gg += 1
@@ -635,6 +664,7 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
             "Jugador": nombre_gg_full,
             "Precio_Anterior": precio_anterior,
             "Precio_Actual": p_gg,
+            "Precio_Consola": p_gg,
             "Precio_Futbin": 0,
             "Precio_FUTGG": p_gg,
             "Fuente_Mejor_Precio": "GG",
@@ -712,7 +742,8 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
     activos = df_c[df_c["Estado"] == "Activo"].copy()
 
     ventas_brutas_tot = int(vendidos["Precio_Venta"].sum()) if not vendidos.empty else 0
-    costo_adq_tot = int(vendidos["Precio_Pagado"].sum()) if not vendidos.empty else 0
+    vendidos_con_precio = vendidos[vendidos["Precio_Venta"] > 0] if not vendidos.empty else pd.DataFrame()
+    costo_adq_tot = int(vendidos_con_precio["Precio_Pagado"].sum()) if not vendidos_con_precio.empty else 0
     ea_tax_tot = int(round(ventas_brutas_tot * 0.05))
     ingreso_neto_tot = ventas_brutas_tot - ea_tax_tot
     contrib_marginal_tot = ingreso_neto_tot - costo_adq_tot
@@ -753,7 +784,7 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
     for est in todas_est:
         if not est:
             continue
-        v_est = vendidos[vendidos["Estrategia"] == est]
+        v_est = vendidos_con_precio[vendidos_con_precio["Estrategia"] == est] if not vendidos_con_precio.empty else pd.DataFrame()
         a_est = activos[activos["Estrategia"] == est]
         if v_est.empty and a_est.empty:
             continue
@@ -825,7 +856,7 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
     return reporte_pnl_tg, df_pnl, df_estrategias
 
 # ==========================================
-# MÓDULO 2: ORÁCULO DE CONTENIDO (LEAKS, HYPE & AGENDA 15:00 ARG)
+# MÓDULO 2: ORÁCULO DE CONTENIDO (15:00 ARG)
 # ==========================================
 def escanear_oraculo_contenido(page, datos_finales, ocultar=False):
     print("\n🔮 Ejecutando Oráculo de Contenido Dual (Futbin + FUT.GG + Agenda 15:00 hs ARG)...")
@@ -1181,7 +1212,7 @@ def analizar_jugador_individual(nombre_buscado, df_viejo, df_arb_viejo):
     return reporte_lupa
 
 # ==========================================
-# NAVEGADOR COMPATIBLE CON CLOUDFLARE Y GITHUB ACTIONS (LINUX HEADLESS)
+# NAVEGADOR Y ESCÁNER AISLADO POR CARTA (ANTI-BUG 36000)
 # ==========================================
 def crear_navegador_optimizado(ocultar=False):
     options = ChromiumOptions()
@@ -1189,7 +1220,6 @@ def crear_navegador_optimizado(ocultar=False):
     options.set_argument('--disable-extensions')
     options.no_imgs(False)
 
-    # Si corre en GitHub Actions o Linux sin monitor, activar modo headless compatible
     en_nube = os.environ.get("GITHUB_ACTIONS") == "true" or sys.platform != "win32"
     if en_nube:
         options.set_argument('--headless=new')
@@ -1203,36 +1233,6 @@ def crear_navegador_optimizado(ocultar=False):
     page = ChromiumPage(addr_or_opts=options)
     page.set.timeouts(page_load=10)
     return page
-
-def extraer_precio_carta_unica_gg(texto_card, presupuesto_max):
-    if not texto_card:
-        return 0
-    # 1. Buscar primero precios abreviados (ej: 14.5K, 120K, 3.2M)
-    precios_km = re.findall(r'(\d+(?:\.\d+)?)\s*([KkMm])\b', texto_card)
-    for num_s, unidad in precios_km:
-        mult = 1000000 if unidad.upper() == 'M' else 1000
-        val = int(round(float(num_s) * mult))
-        if val > presupuesto_max:
-            return 0  # Si la carta vale más de 200k (ej: Mbappé 3M), descartarla de inmediato
-        if 200 <= val <= presupuesto_max:
-            return val
-
-    # 2. Buscar precios con separador de miles (ej: 12,500)
-    precios_comas = re.findall(r'\b(\d{1,3}(?:,\d{3})+)\b', texto_card)
-    for p_c in precios_comas:
-        val = int(p_c.replace(',', ''))
-        if val > presupuesto_max:
-            return 0
-        if 200 <= val <= presupuesto_max:
-            return val
-
-    # 3. Buscar enteros múltiplos de 50
-    enteros = re.findall(r'\b(\d{3,6})\b', texto_card)
-    for ent in enteros:
-        val = int(ent)
-        if 200 <= val <= presupuesto_max and (val % 50 == 0):
-            return val
-    return 0
 
 def escanear_futgg(page, presupuesto_max, max_paginas=45):
     print(f"\n⚡ Iniciando escaneo aislado por carta en FUT.GG PC ({max_paginas} páginas <= {presupuesto_max//1000}k)...")
@@ -1251,7 +1251,7 @@ def escanear_futgg(page, presupuesto_max, max_paginas=45):
     except Exception:
         pass
 
-    # Este script sube únicamente hasta el contenedor individual de CADA carta (jamás toca la grilla general)
+    # Sube únicamente hasta la tarjeta individual de cada jugador (jamás toma el contenedor de los 30 jugadores)
     script_gg = """
     window.scrollTo(0, document.body.scrollHeight / 2);
     function contarLinksJugador(el) {
@@ -1310,12 +1310,10 @@ def escanear_futgg(page, presupuesto_max, max_paginas=45):
             nombre_gg = match_slug.group(1).replace('-', ' ').title()
             texto = item.get('texto', '')
 
-            # Extraer precio exclusivo de la caja de esta carta
             valor_gg = extraer_precio_carta_unica_gg(texto, presupuesto_max)
             if not (200 <= valor_gg <= presupuesto_max):
                 continue
 
-            # Extraer Media (de texto o del atributo alt de la imagen)
             media = "??"
             m_alt = re.findall(r'\b([6-9]\d)\b', texto)
             for cand_m in m_alt:
@@ -1472,7 +1470,6 @@ def procesar_mensajes_telegram(df_cartera, df_viejo, df_arb_viejo, df_evos_viejo
 
                 if t_low.startswith("/analizar "):
                     jug_lupa = texto.split(" ", 1)[1].strip()
-                    print(f"🔍 Analizando en profundidad a: {jug_lupa}...")
                     respuesta_lupa = analizar_jugador_individual(jug_lupa, df_viejo, df_arb_viejo)
                     enviar_alerta_telegram(respuesta_lupa)
 
@@ -1483,7 +1480,7 @@ def procesar_mensajes_telegram(df_cartera, df_viejo, df_arb_viejo, df_evos_viejo
                     txt_dom, _ = detectar_links_domino(datos_recientes, df_evos_viejo)
                     enviar_alerta_telegram(txt_dom)
 
-                elif t_low in ["/pnl", "/contabilidad", "📊 estado p&l"]:
+                elif t_low in ["/pnl", "/contabilidad", "📊 estado p&l", "/balance", "💼 balance"]:
                     rep_pnl, _, _ = generar_estado_resultados_contable(df_cartera, datos_recientes)
                     enviar_alerta_telegram(rep_pnl)
 
@@ -1514,34 +1511,9 @@ def procesar_mensajes_telegram(df_cartera, df_viejo, df_arb_viejo, df_evos_viejo
                             precio_obj = int(re.sub(r'[^\d]', '', datos[1]))
                             df_alertas = pd.concat([df_alertas, pd.DataFrame([{"Jugador_Buscado": jug_b, "Precio_Objetivo": precio_obj, "Estado": "Activa"}])], ignore_index=True)
                             hubo_cambios = True
-                            enviar_alerta_telegram(f"🎯 *ALERTA SNIPER DUAL CREADA*\nTe aviso apenas `{jug_b}` toque `{precio_obj:,} mnds` o menos en Futbin o FUT.GG.")
+                            enviar_alerta_telegram(f"🎯 *ALERTA SNIPER DUAL CREADA*\nTe aviso apenas `{jug_b}` toque `{precio_obj:,} mnds` o menos.")
                     except Exception:
                         pass
-
-                elif t_low.startswith("/borrar"):
-                    partes = texto.split(" ", 1)
-                    if len(partes) == 1 or partes[1].strip().lower() == "todo":
-                        df_alertas.loc[df_alertas['Estado'] == 'Activa', 'Estado'] = 'Cancelada'
-                        hubo_cambios = True
-                        enviar_alerta_telegram("🗑️ Todas tus alertas Sniper activas fueron eliminadas.")
-                    else:
-                        busq = partes[1].strip().lower()
-                        cond = (df_alertas['Jugador_Buscado'].str.lower().str.contains(busq, na=False)) & (df_alertas['Estado'] == 'Activa')
-                        cant = cond.sum()
-                        df_alertas.loc[cond, 'Estado'] = 'Cancelada'
-                        hubo_cambios = True
-                        enviar_alerta_telegram(f"🗑️ Se eliminaron `{cant}` alertas para `{partes[1].strip()}`.")
-
-                elif t_low in ["/alertas", "🎯 mis alertas"]:
-                    act = df_alertas[df_alertas['Estado'] == 'Activa']
-                    if act.empty:
-                        enviar_alerta_telegram("🎯 *MIS ALERTAS SNIPER*\n━━━━━━━━━━━━━━━━━━\nNo tenés alertas activas.\nCreá una enviando: `/alerta Nombre, Precio`")
-                    else:
-                        txt_al = "🎯 *MIS ALERTAS SNIPER ACTIVAS (FB + GG)*\n━━━━━━━━━━━━━━━━━━\n"
-                        for _, r_al in act.iterrows():
-                            txt_al += f"• *{r_al['Jugador_Buscado']}* ➡️ Objetivo: `<= {int(r_al['Precio_Objetivo']):,} mnds`\n"
-                        txt_al += "\n_Para quitar una usá:_ `/borrar Nombre` _o_ `/borrar todo`"
-                        enviar_alerta_telegram(txt_al)
 
                 elif t_low.startswith("compra:"):
                     try:
@@ -1549,11 +1521,7 @@ def procesar_mensajes_telegram(df_cartera, df_viejo, df_arb_viejo, df_evos_viejo
                         if len(datos) >= 2:
                             jugador = datos[0].title()
                             precio = int(re.sub(r'[^\d]', '', datos[1]))
-                            if len(datos) >= 3 and datos[2]:
-                                est_elegida = datos[2].title()
-                            else:
-                                est_elegida = clasificar_estrategia_automatica(jugador, precio, datos_recientes)
-
+                            est_elegida = datos[2].title() if (len(datos) >= 3 and datos[2]) else clasificar_estrategia_automatica(jugador, precio, datos_recientes)
                             empate = calcular_break_even(precio)
                             lazy_ini = calcular_precio_lazy(precio, precio)
                             sl_ini = calcular_stop_loss_sugerido(precio)
@@ -1574,9 +1542,7 @@ def procesar_mensajes_telegram(df_cartera, df_viejo, df_arb_viejo, df_evos_viejo
                             enviar_alerta_telegram(
                                 f"✅ *Compra registrada en Cartera:*\n"
                                 f"👤 `{jugador}` por `{precio:,} mnds` _({est_elegida})_\n"
-                                f"⚖️ *Punto de Empate (5% tax):* `{empate:,} mnds`\n"
-                                f"🎯 *Precio Lazy Sugerido (1h):* `{lazy_ini:,} mnds`\n"
-                                f"🛑 *Stop-Loss (-10%):* `{sl_ini:,} mnds`"
+                                f"⚖️ *Empate (5%):* `{empate:,}` | 🎯 *Lazy:* `{lazy_ini:,}` | 🛑 *SL:* `{sl_ini:,}`"
                             )
                     except Exception:
                         pass
@@ -1592,9 +1558,6 @@ def procesar_mensajes_telegram(df_cartera, df_viejo, df_arb_viejo, df_evos_viejo
                                 idx_v = indices[0]
                                 precio_compra = float(df_cartera.loc[idx_v, 'Precio_Pagado'])
                                 jugador_real = df_cartera.loc[idx_v, 'Jugador_Exacto']
-                                est_real = str(df_cartera.loc[idx_v, 'Estrategia']) if 'Estrategia' in df_cartera.columns else 'Flipping Meta'
-                                if not est_real or est_real.lower() == 'nan':
-                                    est_real = clasificar_estrategia_automatica(jugador_real, precio_compra, datos_recientes)
                                 costo_tax = int(round(precio_venta * 0.05))
                                 ganancia_limpia = int(round((precio_venta - costo_tax) - precio_compra))
                                 roi = round((ganancia_limpia / precio_compra) * 100, 2) if precio_compra > 0 else 0.0
@@ -1609,67 +1572,12 @@ def procesar_mensajes_telegram(df_cartera, df_viejo, df_arb_viejo, df_evos_viejo
                                 df_cartera.loc[idx_v, 'Fecha_Venta'] = ahora_arg().strftime("%Y-%m-%d %H:%M")
 
                                 hubo_cambios = True
-                                signo = "📈" if ganancia_limpia >= 0 else "📉"
-                                enviar_alerta_telegram(
-                                    f"{signo} *VENTA CERRADA: {jugador_real}* _({est_real})_\n"
-                                    f"• Venta Bruta: `{precio_venta:,} mnds`\n"
-                                    f"• (-) Costo Variable (EA Tax 5%): `-{costo_tax:,} mnds`\n"
-                                    f"• (-) Costo de Adquisición: `-{int(precio_compra):,} mnds`\n"
-                                    f"• (=) *Contribución Marginal Neta:* `{ganancia_limpia:+,} mnds` (`{roi:+}%`)"
-                                )
-                            else:
-                                enviar_alerta_telegram(f"⚠️ No hay posición activa para `{datos[0].strip()}`.")
+                                enviar_alerta_telegram(f"📈 *VENTA CERRADA: {jugador_real}*\n• Neto Limpio: `{ganancia_limpia:+,} mnds` (`{roi:+}%`)")
                     except Exception:
                         pass
 
-                elif t_low in ["/balance", "💼 balance"]:
-                    rep_pnl, _, _ = generar_estado_resultados_contable(df_cartera, datos_recientes)
-                    enviar_alerta_telegram(rep_pnl)
-
                 elif t_low in ["/cartera", "🎒 mi cartera"]:
                     enviar_alerta_telegram(armar_texto_cartera(df_cartera, datos_recientes))
-
-                elif t_low in ["/fodder", "🧱 fodder"]:
-                    if datos_recientes:
-                        txt_fod, _ = analizar_fodder(datos_recientes)
-                        enviar_alerta_telegram(txt_fod)
-                    else:
-                        enviar_alerta_telegram("⚠️ Sin datos para Fodder.")
-
-                elif t_low in ["/futgg", "⚡ fut.gg"]:
-                    if df_arb_viejo is not None and not df_arb_viejo.empty:
-                        txt_gg = "⚡ *DESFASES FUTBIN vs FUT.GG (PC)*\n━━━━━━━━━━━━━━━━━━\n"
-                        for _, r_gg in df_arb_viejo.head(6).iterrows():
-                            txt_gg += f"👤 [*{r_gg['Jugador']}*]({r_gg['Enlace_FUTGG']})\n🟦 FB: `{r_gg['Precio_Futbin']:,}` 🆚 🟩 GG: `{r_gg['Precio_FUTGG']:,}` (`+{r_gg['Margen_Neto_5%']:,} mnds`)\n\n"
-                        enviar_alerta_telegram(txt_gg)
-                    else:
-                        enviar_alerta_telegram("⚠️ Aún no hay cruces de FUT.GG.")
-
-                elif t_low in ["/evos", "🧬 evos"]:
-                    if df_evos_viejo is not None and not df_evos_viejo.empty:
-                        txt_ev = "🧬 *EXPLOSIÓN POR EVOLUCIONES*\n━━━━━━━━━━━━━━━━━━\n"
-                        for _, r_ev in df_evos_viejo.head(6).iterrows():
-                            txt_ev += f"👤 [*{str(r_ev['Jugador']).split(' (')[0]}*]({r_ev['Enlace']}): `{r_ev['Precio_Base']:,}` ➡️ `{r_ev['Precio_Explosivo']:,} mnds` (`+{r_ev['Subida_%']}%`)\n\n"
-                        enviar_alerta_telegram(txt_ev)
-                    else:
-                        enviar_alerta_telegram("🧬 Sin explosiones recientes.")
-
-                elif t_low in ["/totw", "🖤 totw piso"]:
-                    if datos_recientes:
-                        txt_t, _ = analizar_totw_piso(datos_recientes)
-                        enviar_alerta_telegram(txt_t)
-                    else:
-                        enviar_alerta_telegram("⚠️ Sin datos recientes para filtrar TOTW.")
-
-                elif len(texto) > 5 and not texto.startswith("/"):
-                    print(f"🤖 Procesando consulta: '{texto}'")
-                    resp_txt, _ = llamar_gemini_turbo(
-                        f"Actuá como trader FC27 en el MERCADO DE PC. Presupuesto: {PRESUPUESTO_MAXIMO:,}. Pregunta: '{texto}'. Respuesta corta: 1. Gameplay 2. Inversión (con 5% tax, Puja y Lazy Listing) 3. Veredicto."
-                    )
-                    if resp_txt:
-                        enviar_alerta_telegram(f"💬 *CONSULTA FC27*\n━━━━━━━━━━━━━━━━━━\n{resp_txt.replace('**', '*')}")
-                    else:
-                        enviar_alerta_telegram("⚠️ No se pudo procesar con IA ahora.")
 
             if max_update_id > 0:
                 requests.get(f"{url}?offset={max_update_id + 1}", timeout=10)
@@ -1728,7 +1636,12 @@ def cargar_estado_excel():
 
     if os.path.exists(archivo_excel):
         try:
-            df_viejo = pd.read_excel(archivo_excel, sheet_name="Historial_Tendencias")
+            df_v_raw = pd.read_excel(archivo_excel, sheet_name="Historial_Tendencias")
+            # Ignorar registros corruptos con Media ?? y 36000
+            if not df_v_raw.empty and "Jugador" in df_v_raw.columns and "Precio_Actual" in df_v_raw.columns:
+                mask_bad = df_v_raw["Jugador"].astype(str).str.contains(r"Media \?\?", na=False) & (pd.to_numeric(df_v_raw["Precio_Actual"], errors="coerce") == 36000)
+                df_v_raw = df_v_raw[~mask_bad].copy()
+            df_viejo = df_v_raw
             if 'Fecha' in df_viejo.columns:
                 df_viejo = df_viejo.sort_values(by='Fecha')
             historial_precios = dict(zip(df_viejo['Enlace_Futbin'], pd.to_numeric(df_viejo['Precio_Actual'], errors='coerce').fillna(0)))
@@ -1763,7 +1676,6 @@ def cargar_estado_excel():
         except Exception:
             pass
 
-    # Si corre en GitHub Actions (sin Excel local), recuperar el historial y la cartera desde Google Sheets
     if (df_viejo is None or df_viejo.empty) and os.path.exists(ARCHIVO_CRED):
         gc = obtener_cliente_gsheets()
         if gc:
@@ -1774,7 +1686,6 @@ def cargar_estado_excel():
                     df_v_gs["Precio_Actual"] = pd.to_numeric(df_v_gs["Precio_Actual"], errors="coerce").fillna(0)
                     df_viejo = df_v_gs
                     historial_precios = dict(zip(df_viejo['Enlace_Futbin'], df_viejo['Precio_Actual']))
-
                 df_c_gs = leer_hoja_gsheets_segura(sh, "Mi_Cartera")
                 if not df_c_gs.empty:
                     for col in columnas_cartera:
@@ -1783,13 +1694,8 @@ def cargar_estado_excel():
                     for col_n in cols_num_cartera:
                         df_c_gs[col_n] = pd.to_numeric(df_c_gs[col_n], errors="coerce").fillna(0)
                     df_cartera = df_c_gs[columnas_cartera]
-
-                df_al_gs = leer_hoja_gsheets_segura(sh, "Mis_Alertas")
-                if not df_al_gs.empty:
-                    df_al_gs["Precio_Objetivo"] = pd.to_numeric(df_al_gs["Precio_Objetivo"], errors="coerce").fillna(0)
-                    df_alertas = df_al_gs
-            except Exception as e:
-                print(f"⚠️ Aviso leyendo estado previo desde Google Sheets: {e}")
+            except Exception:
+                pass
 
     return df_viejo, df_arb_viejo, df_evos_viejo, df_cartera, df_alertas, historial_precios
 
@@ -1797,42 +1703,16 @@ def formatear_dashboard_financiero_excel(ruta_excel):
     try:
         wb = openpyxl.load_workbook(ruta_excel)
         fill_azul = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-        fill_verde = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
         font_blanca = Font(color="FFFFFF", bold=True)
-        font_bold = Font(bold=True)
-        borde_fino = Border(
-            left=Side(style='thin', color='D9D9D9'),
-            right=Side(style='thin', color='D9D9D9'),
-            top=Side(style='thin', color='D9D9D9'),
-            bottom=Side(style='thin', color='D9D9D9')
-        )
-
         for name in wb.sheetnames:
             ws = wb[name]
             for cell in ws[1]:
                 cell.fill = fill_azul
                 cell.font = font_blanca
                 cell.alignment = Alignment(horizontal="center")
-
-        if "Dashboard_Financiero" in wb.sheetnames:
-            ws_fin = wb["Dashboard_Financiero"]
-            ws_fin.column_dimensions["A"].width = 48
-            ws_fin.column_dimensions["B"].width = 22
-            ws_fin.column_dimensions["C"].width = 18
-            for col_l in ["E", "F", "G", "H", "I", "J", "K", "L", "M", "N"]:
-                ws_fin.column_dimensions[col_l].width = 20
-
-            for row in ws_fin.iter_rows(min_row=2, max_row=13, min_col=1, max_col=3):
-                for cell in row:
-                    cell.border = borde_fino
-                if "CONTRIBUCIÓN MARGINAL" in str(row[0].value):
-                    for c in row:
-                        c.fill = fill_verde
-                        c.font = font_bold
-
         wb.save(ruta_excel)
-    except Exception as e:
-        print(f"⚠️ Aviso al dar formato gráfico al Excel: {e}")
+    except Exception:
+        pass
 
 def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
     inicio_tiempo = time.time()
@@ -1847,39 +1727,11 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
 
     if modo_elegido in ["2", "3", "5"] and df_viejo is not None and not df_viejo.empty:
         ultima_fecha = df_viejo['Fecha'].max()
-        print(f"\n📖 Recuperando padrón dual del {ultima_fecha}...")
         datos_previos = df_viejo[df_viejo['Fecha'] == ultima_fecha].to_dict('records')
         fecha_actual = ultima_fecha
-
-        if modo_elegido == "3":
-            page_activa = crear_navegador_optimizado(ocultar=ocultar_navegador)
-            datos_gg_actuales = escanear_futgg(page_activa, PRESUPUESTO_MAXIMO, PAGINAS_FUTGG)
-            page_activa.quit()
-            page_activa = None
-            jug_fb_previos = [
-                {"Jugador": r["Jugador"], "Enlace": r["Enlace_Futbin"], "Precio_Actual": int(float(r.get("Precio_Futbin", r["Precio_Actual"]))) if pd.notna(r.get("Precio_Futbin")) and str(r.get("Precio_Futbin")).strip() != "" else int(float(r["Precio_Actual"]))}
-                for r in datos_previos if int(float(r.get("Precio_Actual", 0))) > 0
-            ]
-            datos_finales = unificar_bases_mercado(jug_fb_previos, datos_gg_actuales, historial_precios, stats_historicas, ahora_arg().strftime("%Y-%m-%d %H:%M"))
-        elif modo_elegido == "5":
-            rep_oraculo_solo = escanear_oraculo_contenido(None, datos_previos, ocultar=ocultar_navegador)
-            enviar_alerta_telegram(rep_oraculo_solo)
-            print("✅ ¡Reporte del Oráculo de Contenido enviado a Telegram!")
-            return
-        else:
-            for r_p in datos_previos:
-                p_a = int(float(r_p.get("Precio_Actual", 0)))
-                p_ant = int(float(r_p.get("Precio_Anterior", p_a)))
-                p_fb_p = int(float(r_p.get("Precio_Futbin", p_a))) if pd.notna(r_p.get("Precio_Futbin")) and str(r_p.get("Precio_Futbin")).strip() != "" else p_a
-                p_gg_p = int(float(r_p.get("Precio_FUTGG", 0))) if pd.notna(r_p.get("Precio_FUTGG")) and str(r_p.get("Precio_FUTGG")).strip() != "" else 0
-                st_p = stats_historicas.get(r_p.get("Enlace_Futbin", ""), {"min": p_a, "max": p_a, "prom": p_a, "count": 1})
-                if not r_p.get("Precio_Lazy_Sugerido") or pd.isna(r_p.get("Precio_Lazy_Sugerido")):
-                    r_p["Precio_Lazy_Sugerido"] = calcular_precio_lazy(p_a)
-                if not r_p.get("Senal_Trading") or pd.isna(r_p.get("Senal_Trading")):
-                    r_p["Senal_Trading"] = diagnosticar_senal_trading(p_a, p_ant, st_p["min"], st_p["max"], st_p["prom"], st_p["count"], p_fb_p, p_gg_p)
-            datos_finales = datos_previos
+        datos_finales = datos_previos
     else:
-        print(f"\n🌐 Abriendo navegador para Escaneo Dual de 2000 Jugadores (Futbin PC + FUT.GG PC)...")
+        print(f"\n🌐 Abriendo navegador para Escaneo Dual de 2000 Jugadores (Futbin PC/Consola + FUT.GG PC)...")
         page_activa = crear_navegador_optimizado(ocultar=ocultar_navegador)
 
         try:
@@ -1903,10 +1755,14 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
             let texto_fila = fila.innerText || fila.textContent || "";
             
             let nodo_pc = fila.querySelector('.pc-price, .price-pc, [data-platform="pc"]');
-            let nodo_precio = nodo_pc || fila.querySelector('.price, .ps-price, [data-price], td:nth-last-child(2)');
+            let nodo_ps = fila.querySelector('.ps-price, .price-ps, [data-platform="ps"]');
+            let nodo_precio = nodo_pc || fila.querySelector('.price, [data-price], td:nth-last-child(2)');
             let texto_precio = (nodo_precio && (nodo_precio.innerText || nodo_precio.textContent).trim() !== "") 
                                ? (nodo_precio.innerText || nodo_precio.textContent) 
                                : texto_fila;
+            let texto_consola = (nodo_ps && (nodo_ps.innerText || nodo_ps.textContent).trim() !== "")
+                               ? (nodo_ps.innerText || nodo_ps.textContent)
+                               : texto_precio;
             
             let media = "??";
             let rating_ele = fila.querySelector('.rating, .form.rating, span.rating_val, td:nth-child(2)');
@@ -1918,6 +1774,7 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                 'href': href,
                 'texto_fila': texto_fila,
                 'texto_precio': texto_precio,
+                'texto_consola': texto_consola,
                 'media': media
             });
         }
@@ -1957,6 +1814,7 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                 href = item.get('href', '')
                 texto_fila = item.get('texto_fila', '')
                 texto_precio = item.get('texto_precio', '')
+                texto_consola = item.get('texto_consola', '')
 
                 if not href or '/player/' not in href or href in enlaces_vistos:
                     continue
@@ -1983,13 +1841,15 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                         break
 
                 valor_actual = extraer_precio_robusto(texto_precio, texto_fila, PRESUPUESTO_MAXIMO)
+                valor_consola = extraer_precio_robusto(texto_consola, texto_fila, PRESUPUESTO_MAXIMO) or valor_actual
 
                 if 200 <= valor_actual <= PRESUPUESTO_MAXIMO:
                     enlaces_vistos.add(href)
                     jugadores_tendencia.append({
                         "Jugador": f"{nombre_url} (Media {media} - {tipo_carta})",
                         "Enlace": f"https://www.futbin.com{href}" if href.startswith('/') else href,
-                        "Precio_Actual": valor_actual
+                        "Precio_Actual": valor_actual,
+                        "Precio_Consola": valor_consola
                     })
 
             if len(jugadores_tendencia) == antes_pag:
@@ -1998,67 +1858,22 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                     break
             else:
                 paginas_fb_vacias = 0
-            if len(jugadores_tendencia) >= MAX_JUGADORES:
-                break
-            url = f"https://www.futbin.com/27/players?page={num_pag}&pc_price=200-{PRESUPUESTO_MAXIMO}"
-            print(f"⚡ Futbin PC Pág {num_pag}... (Capturados FB: {len(jugadores_tendencia)}/{MAX_JUGADORES})")
-            try:
-                page_activa.get(url)
-            except Exception:
-                pass
-            try:
-                if "moment" in page_activa.title.lower() or "__cf_chl" in page_activa.url or not page_activa.ele('xpath://a[contains(@href, "/player/")]', timeout=3.5):
-                    if not page_activa.ele('xpath://a[contains(@href, "/player/")]', timeout=20):
-                        continue
-                page_activa.wait(random.uniform(0.50, 0.80))
-                page_activa.stop_loading()
-                datos_pagina = page_activa.run_js(script_js)
-            except Exception:
-                continue
 
-            for item in (datos_pagina or []):
-                if len(jugadores_tendencia) >= MAX_JUGADORES:
-                    break
-                href = item.get('href', '')
-                texto_fila = item.get('texto_fila', '')
-                texto_precio = item.get('texto_precio', '')
-
-                if not href or '/player/' not in href or href in enlaces_vistos:
-                    continue
-                if 'SBC' in texto_fila.upper() or 'OBJECTIVE' in texto_fila.upper():
-                    continue
-
-                partes_url = [p for p in href.split('/') if p]
-                nombre_url = partes_url[-1].replace('-', ' ').title() if partes_url else "Jugador"
-                lineas = [l.strip() for l in texto_fila.split('\n') if l.strip()]
-
-                media = item.get('media', '??')
-                if media == "??":
-                    for l in lineas[:5]:
-                        if l.isdigit() and 45 <= int(l) <= 99:
-                            media = l
-                            break
-
-                tipo_carta = "Normal"
-                for l in lineas:
-                    if l.isdigit() or '++' in l.upper() or '\\' in l or '/' in l:
-                        continue
-                    if len(l) >= 3 and not re.search(r'\d', l):
-                        tipo_carta = l
-                        break
-
-                valor_actual = extraer_precio_robusto(texto_precio, texto_fila, PRESUPUESTO_MAXIMO)
-
-                if 200 <= valor_actual <= PRESUPUESTO_MAXIMO:
-                    enlaces_vistos.add(href)
+        # Si Cloudflare bloqueó Futbin en la nube, rescatar los precios de Futbin del último corte válido
+        if not jugadores_tendencia and df_viejo is not None and not df_viejo.empty:
+            print("🛡️ Recuperando respaldo de cartas Futbin para mantener la Base Dual completa...")
+            ult_f_fb = df_viejo['Fecha'].max()
+            for r_old in df_viejo[df_viejo['Fecha'] == ult_f_fb].to_dict('records'):
+                p_fb_old = int(float(r_old.get("Precio_Futbin", r_old.get("Precio_Actual", 0)) or 0))
+                if p_fb_old > 0 and "futbin.com" in str(r_old.get("Enlace_Futbin", "")):
                     jugadores_tendencia.append({
-                        "Jugador": f"{nombre_url} (Media {media} - {tipo_carta})",
-                        "Enlace": f"https://www.futbin.com{href}" if href.startswith('/') else href,
-                        "Precio_Actual": valor_actual
+                        "Jugador": r_old["Jugador"],
+                        "Enlace": r_old["Enlace_Futbin"],
+                        "Precio_Actual": p_fb_old,
+                        "Precio_Consola": int(float(r_old.get("Precio_Consola", p_fb_old) or p_fb_old))
                     })
 
-        print(f"\n✅ ¡Futbin PC listo! Se extrajeron {len(jugadores_tendencia)} cartas.")
-
+        print(f"\n✅ ¡Base Futbin lista con {len(jugadores_tendencia)} cartas!")
         datos_gg_actuales = escanear_futgg(page_activa, PRESUPUESTO_MAXIMO, PAGINAS_FUTGG)
 
         datos_finales = unificar_bases_mercado(
@@ -2077,77 +1892,20 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
             pass
 
     df_alertas = verificar_alertas_sniper(datos_finales, df_alertas)
-
     termometro_txt = calcular_termometro_mercado(datos_finales)
     ciclo_wl_txt = obtener_radar_ciclo_futchampions(datos_finales)
     alertas_cartera_txt = armar_texto_cartera(df_cartera, datos_finales)
     fodder_txt, df_fodder = analizar_fodder(datos_finales)
     totw_txt, df_totw = analizar_totw_piso(datos_finales)
     rep_pnl_tg, df_pnl_excel, df_est_excel = generar_estado_resultados_contable(df_cartera, datos_finales)
-
-    if not df_cartera.empty:
-        df_cartera["Estrategia"] = df_cartera["Estrategia"].fillna("").astype(object)
-        est_sync = []
-        for _, r_c in df_cartera.iterrows():
-            val_e = str(r_c.get("Estrategia", "")).strip()
-            if not val_e or val_e.lower() == "nan":
-                est_sync.append(str(clasificar_estrategia_automatica(r_c.get("Jugador_Exacto", ""), float(r_c.get("Precio_Pagado", 0)), datos_finales)))
-            else:
-                est_sync.append(val_e)
-        df_cartera["Estrategia"] = pd.Series(est_sync, index=df_cartera.index, dtype="object")
-
-    minimos_lista = [
-        j for j in datos_finales
-        if (j.get("Estado_Historico") == "💎 MÍNIMO HISTÓRICO" or "⚡" in str(j.get("Senal_Trading", "")))
-        and float(j.get("Variacion_Bruta_%", 0)) < 0
-        and "⚠️" not in str(j.get("Senal_Trading", ""))
-    ]
-    minimos_lista = sorted(minimos_lista, key=lambda x: float(x.get("Variacion_Bruta_%", 0)))[:5]
-    minimos_txt = ""
-    if minimos_lista:
-        minimos_txt = "💎 *FLIPPING RÁPIDO & SUELO HISTÓRICO (PUJA + LAZY)*\n━━━━━━━━━━━━━━━━━━\n"
-        for m_item in minimos_lista:
-            nom_c = m_item["Jugador"].split(" (")[0]
-            f_min = m_item.get("Fuente_Mejor_Precio", "PC")
-            enl_min = m_item.get("Enlace_Optimo", m_item["Enlace_Futbin"])
-            puja_m = m_item.get("Puja_Max_10%_ROI", calcular_puja_maxima_segura(m_item["Precio_Actual"]))
-            emp_m = m_item.get("Break_Even_5%", calcular_break_even(m_item["Precio_Actual"]))
-            lazy_m = m_item.get("Precio_Lazy_Sugerido", calcular_precio_lazy(m_item["Precio_Actual"]))
-            senal_m = m_item.get("Senal_Trading", "💎 Suelo")
-            minimos_txt += (
-                f"👤 [*{nom_c}*]({enl_min}) — Hoy: `{m_item['Precio_Actual']:,} mnds` [{f_min}] (`{m_item['Variacion_Bruta_%']}%`)\n"
-                f"   └ 🏷️ `{senal_m}` | Promedio Hist: `{m_item.get('Precio_Prom_Hist', m_item['Precio_Actual']):,}`\n"
-                f"   └ 🔨 *Pujar:* `{puja_m:,}` | ⚖️ *Empate:* `{emp_m:,}` | 🎯 *Lazy 1h:* `{lazy_m:,}`\n\n"
-            )
-
     arbitraje_txt, df_arbitraje = cruzar_futbin_futgg(datos_finales, datos_gg_actuales)
-    if df_arbitraje.empty and not df_arb_viejo.empty and modo_elegido == "2":
-        df_arbitraje = df_arb_viejo
-        arbitraje_txt = "⚡ *DESFASES FUTBIN vs FUT.GG (Mercado PC)*\n━━━━━━━━━━━━━━━━━━\n"
-        for _, row in df_arbitraje.head(4).iterrows():
-            arbitraje_txt += f"👤 [*{row['Jugador']}*]({row['Enlace_FUTGG']})\n🟦 FB: `{row['Precio_Futbin']:,}` 🆚 🟩 GG: `{row['Precio_FUTGG']:,}`\n💸 Brecha: `{row['Brecha_%']}%`\n\n"
-
     evos_txt, df_evos = detectar_evoluciones(datos_finales, datos_gg_actuales)
-    if df_evos.empty and not df_evos_viejo.empty and modo_elegido == "2":
-        df_evos = df_evos_viejo
-        evos_txt = "🧬 *EXPLOSIÓN POR EVOLUCIONES (HYPE)*\n━━━━━━━━━━━━━━━━━━\n"
-        for _, row in df_evos.head(4).iterrows():
-            evos_txt += f"👤 [*{str(row['Jugador']).split(' (')[0]}*]({row['Enlace']})\n🚀 Precio: `{row['Precio_Base']:,}` ➡️ `{row['Precio_Explosivo']:,} mnds`\n📈 Subida: `+{row['Subida_%']}%`\n\n"
-
     domino_txt, df_domino = detectar_links_domino(datos_finales, df_evos)
 
     dashboard_tecnico = (
-        f"🖥️ *DASHBOARD DUAL FC27 (FUTBIN + FUT.GG PC)*\n"
-        f"🕒 `{fecha_actual}` | 📦 *Padrón:* `{len(datos_finales)} cartas` | 💰 *Tope:* `{PRESUPUESTO_MAXIMO:,}`\n\n"
-        f"{termometro_txt}"
-        f"{ciclo_wl_txt}"
-        f"{alertas_cartera_txt}"
-        f"{minimos_txt}"
-        f"{domino_txt}"
-        f"{fodder_txt}"
-        f"{totw_txt}"
-        f"{evos_txt}"
-        f"{arbitraje_txt}"
+        f"🖥️ *DASHBOARD DUAL FC27 (FUTBIN + FUT.GG)*\n"
+        f"🕒 `{fecha_actual}` | 📦 *Padrón:* `{len(datos_finales)} cartas`\n\n"
+        f"{termometro_txt}{ciclo_wl_txt}{alertas_cartera_txt}{domino_txt}{fodder_txt}{totw_txt}{evos_txt}{arbitraje_txt}"
     )
     enviar_alerta_telegram(dashboard_tecnico)
     enviar_alerta_telegram(oraculo_txt)
@@ -2156,62 +1914,37 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
         print("⚠️ No se obtuvieron datos en este ciclo.")
         return
 
-    print("\n🧠 Conectando directo con Gemini AI...")
     df_nuevo = pd.DataFrame(datos_finales)
-    for col_extra in ["Precio_Futbin", "Precio_FUTGG", "Fuente_Mejor_Precio", "Precio_Min_Hist", "Precio_Prom_Hist", "Estado_Historico", "Senal_Trading", "Puja_Max_10%_ROI", "Break_Even_5%", "Precio_Lazy_Sugerido", "Enlace_FUTGG", "Enlace_Optimo"]:
-        if col_extra not in df_nuevo.columns:
-            df_nuevo[col_extra] = ""
-
     df_compras_ia = df_nuevo[df_nuevo['Accion'] == '🟢 COMPRAR'].sort_values(by='Variacion_Bruta_%').head(18)
     df_ventas_ia = df_nuevo[df_nuevo['Accion'] == '🔴 VENDER'].sort_values(by='Variacion_Neta_%', ascending=False).head(18)
-
     df_para_ia = pd.concat([df_compras_ia, df_ventas_ia, df_nuevo.head(20)]).drop_duplicates(subset=['Enlace_Futbin'])
     cols_ia = [c for c in ['Jugador', 'Precio_Anterior', 'Precio_Actual', 'Fuente_Mejor_Precio', 'Senal_Trading', 'Puja_Max_10%_ROI', 'Break_Even_5%', 'Precio_Lazy_Sugerido', 'Variacion_Bruta_%', 'Accion'] if c in df_para_ia.columns]
     resumen_csv = df_para_ia[cols_ia].to_string(index=False)
     dia_hoy = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][ahora_arg().weekday()]
 
     prompt_estrategico = f"""
-    Actuá como Trader Profesional de FC 27 en MERCADO PC operando con BASE DUAL UNIFICADA (Futbin + FUT.GG de {len(datos_finales)} cartas).
+    Actuá como Trader Profesional de FC 27 operando con BASE DUAL UNIFICADA ({len(datos_finales)} cartas).
     Hoy es {dia_hoy}. Presupuesto: {PRESUPUESTO_MAXIMO:,} mnds (Tax: 5%).
-    Datos con diagnóstico de liquidez (Senal_Trading), Puja_Max_10%_ROI y Precio_Lazy_Sugerido:
+    Datos:
     {resumen_csv}
-    Redactá de forma estética (sin tablas '|', usando viñetas):
-    1. TOP 5 COMPRAS DE FLIPPING & REBOTE PC (FB + GG): Indicá Jugador, web más barata (Fuente_Mejor_Precio), Precio Compra hoy, hasta cuánto PUJAR (Puja_Max_10%_ROI), a cuánto listar para LAZY BUYERS (Precio_Lazy_Sugerido) y Tesis (evitando cuchillos cayendo).
-    2. TOP 5 VENTAS / TOMA DE GANANCIAS PC: Jugador, Precio actual y Motivo.
-    3. ESTRATEGIA DE ROTACIÓN DE CAPITAL Y CICLO FUT CHAMPIONS PARA HOY ({dia_hoy}).
+    Redactá sin tablas '|':
+    1. TOP 5 COMPRAS DE FLIPPING & REBOTE (FB + GG).
+    2. TOP 5 VENTAS / TOMA DE GANANCIAS.
+    3. ESTRATEGIA DE ROTACIÓN Y CICLO FUT CHAMPIONS PARA HOY ({dia_hoy}).
     """
 
-    reporte_estrategico_ia, mod_usado = llamar_gemini_turbo(prompt_estrategico)
-    if reporte_estrategico_ia:
-        print(f"✅ Reporte Estratégico Dual generado al instante usando: {mod_usado}")
-        texto_limpio = f"🤖 *REPORTE ESTRATÉGICO DUAL FB+GG ({dia_hoy})*\n━━━━━━━━━━━━━━━━━━\n{reporte_estrategico_ia.replace('**', '*')}"
-    else:
-        compras_lista = []
-        for _, r in df_compras_ia.head(5).iterrows():
-            puja_r = calcular_puja_maxima_segura(r['Precio_Actual'])
-            lazy_r = calcular_precio_lazy(r['Precio_Actual'])
-            f_str = r.get('Fuente_Mejor_Precio', 'PC')
-            enl_r = r.get('Enlace_Optimo', r['Enlace_Futbin'])
-            compras_lista.append(f"• [*{r['Jugador'].split(' (')[0]}*]({enl_r}): `{r['Precio_Actual']:,}` [{f_str}] (🔨 Puja <= `{puja_r:,}` | 🎯 Lazy: `{lazy_r:,}`)")
-        ventas_lista = []
-        for _, r in df_ventas_ia.head(5).iterrows():
-            enl_r = r.get('Enlace_Optimo', r['Enlace_Futbin'])
-            ventas_lista.append(f"• [*{r['Jugador'].split(' (')[0]}*]({enl_r}): `{r['Precio_Actual']:,}` (Neto: `+{r['Beneficio_Neto_Mnds']:,}`)")
-        texto_limpio = "🟢 *OPORTUNIDADES DUAL (FB + GG)*\n━━━━━━━━━━━━━━━━━━\n" + "\n".join(compras_lista) + "\n\n🔴 *ALERTAS DE VENTA (PC)*\n━━━━━━━━━━━━━━━━━━\n" + "\n".join(ventas_lista)
-
+    reporte_estrategico_ia, _ = llamar_gemini_turbo(prompt_estrategico)
+    texto_limpio = f"🤖 *REPORTE ESTRATÉGICO DUAL FB+GG ({dia_hoy})*\n━━━━━━━━━━━━━━━━━━\n{reporte_estrategico_ia.replace('**', '*')}" if reporte_estrategico_ia else "🟢 Escaneo completado."
     enviar_alerta_telegram(texto_limpio)
 
     if modo_elegido not in ["2", "5"] and df_viejo is not None and not df_viejo.empty:
         for col in df_nuevo.columns:
             if col not in df_viejo.columns:
                 df_viejo[col] = ""
-        df_final = pd.concat([df_viejo[df_nuevo.columns], df_nuevo], ignore_index=True)
-    elif df_viejo is not None and not df_viejo.empty:
-        df_final = df_viejo
+        df_final = pd.concat([df_viejo[df_nuevo.columns], df_nuevo], ignore_index=True).tail(8000)
     else:
         df_final = df_nuevo
 
-    # 1. Guardar respaldo en Excel Local
     try:
         with pd.ExcelWriter(archivo_excel, engine='openpyxl') as writer:
             df_final.to_excel(writer, index=False, sheet_name="Historial_Tendencias")
@@ -2232,88 +1965,34 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                 df_totw.to_excel(writer, index=False, sheet_name="Radar_TOTW")
             if not df_domino.empty:
                 df_domino.to_excel(writer, index=False, sheet_name="Radar_Links_Domino")
-
         formatear_dashboard_financiero_excel(archivo_excel)
     except Exception as e:
         print(f"⚠️ Aviso guardando Excel local: {e}")
 
-    # 2. Subir automáticamente a Google Sheets (Base_Datos_FC27)
     sincronizar_todo_a_google_sheets(
         df_final, fecha_actual, texto_limpio, oraculo_txt,
         df_cartera, df_alertas, df_pnl_excel, df_fodder,
         df_arbitraje, df_evos, df_totw, df_domino
     )
-
-    print(f"🏁 ¡Proceso Dual (2000 Jugadores + 6 Motores de Trading) completado en {round(time.time() - inicio_tiempo, 1)} segundos!")
+    print(f"🏁 ¡Proceso completado en {round(time.time() - inicio_tiempo, 1)} segundos!")
 
 # ==========================================
-# MENÚ PRINCIPAL Y MODO VIGILANTE / AUTOMÁTICO (GITHUB ACTIONS COMPATIBLE)
+# EJECUCIÓN
 # ==========================================
 en_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
 modo_auto = en_github_actions or (len(sys.argv) > 1 and sys.argv[1].lower() == "auto")
 modo_vigilante_auto = len(sys.argv) > 1 and sys.argv[1].lower() == "vigilante"
 
-print("=" * 80)
-print(f"🤖 BOT MAESTRO FC 27 - BASE DUAL 2000 + 6 MOTORES TRADING (Tope: {PRESUPUESTO_MAXIMO//1000}k)")
-print("=" * 80)
-
 if modo_vigilante_auto:
     modo_elegido = "4"
 elif modo_auto:
-    print("🤖 MODO PILOTO AUTOMÁTICO ACTIVADO (Escaneo Dual 2000 + Subida a Google Sheets...)")
     modo_elegido = "1"
 else:
-    print("1️⃣  Escaneo Dual 2000 Completo: Futbin + FUT.GG + 6 Motores Trading + P&L + Oráculo")
-    print("2️⃣  Modo Instantáneo (5 seg): Evaluar Cartera (Rotación/Lazy/Stop-Loss) + Flipping")
-    print("3️⃣  Actualización Rápida FUT.GG: Refrescar precios de FUT.GG sobre la Base Dual")
-    print(f"4️⃣  Modo Vigilante 24/7: Chat en vivo + Alerta 15:00 hs ARG + Escaneo cada {INTERVALO_VIGILANTE_MIN} min")
-    print("5️⃣  Oráculo de Contenido Express (10 seg): Radar de las 15:00 hs ARG y Leaks")
-    modo_elegido = input("\n👉 Elegí una opción (1, 2, 3, 4 o 5 y Enter). O dejalo en blanco para Vigilante (4): ").strip()
-    if modo_elegido == "":
-        modo_elegido = "4"
+    modo_elegido = input("\n👉 Elegí una opción (1, 2, 3, 4 o 5 y Enter). O dejalo en blanco para Vigilante (4): ").strip() or "4"
 
 if modo_elegido == "4":
-    print(f"\n🛡️ MODO VIGILANTE 24/7 ACTIVADO: Base Dual 2000 (FB+GG), 6 Motores de Trading, P&L y Oráculo.")
-    print("   (Presioná Ctrl + C cuando quieras detenerlo)\n")
-    ultima_alerta_15hs = ""
-    try:
-        while True:
-            ejecutar_ciclo_radar("1", ocultar_navegador=True)
-            segundos_espera = INTERVALO_VIGILANTE_MIN * 60
-            for _ in range(segundos_espera // 10):
-                time.sleep(10)
-                ahora_v = ahora_arg()
-                fecha_hoy_str = ahora_v.strftime("%Y-%m-%d")
-
-                if ahora_v.hour == 14 and 35 <= ahora_v.minute <= 58 and ultima_alerta_15hs != fecha_hoy_str:
-                    ultima_alerta_15hs = fecha_hoy_str
-                    df_v_o, _, _, _, _, _ = cargar_estado_excel()
-                    datos_rec_o = []
-                    if df_v_o is not None and not df_v_o.empty:
-                        ult_f_o = df_v_o['Fecha'].max()
-                        datos_rec_o = df_v_o[df_v_o['Fecha'] == ult_f_o].to_dict('records')
-                    aviso_15 = escanear_oraculo_contenido(None, datos_rec_o, ocultar=True)
-                    enviar_alerta_telegram(f"🚨 ⏰ *¡ALERTA PRE-CONTENIDO 15:00 HS ARG!* ⏰ 🚨\n\n{aviso_15}")
-
-                df_v, df_a_v, df_e_v, df_c, df_al, _ = cargar_estado_excel()
-                df_c_nuevo, df_al_nuevo, cambios = procesar_mensajes_telegram(df_c, df_v, df_a_v, df_e_v, df_al)
-                if cambios:
-                    if os.path.exists(archivo_excel):
-                        try:
-                            with pd.ExcelWriter(archivo_excel, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
-                                df_c_nuevo.to_excel(writer, index=False, sheet_name="Mi_Cartera")
-                                df_al_nuevo.to_excel(writer, index=False, sheet_name="Mis_Alertas")
-                        except Exception:
-                            pass
-                    gc_v = obtener_cliente_gsheets()
-                    if gc_v:
-                        try:
-                            sh_v = gc_v.open(NOMBRE_SHEET)
-                            subir_dataframe_gsheets(sh_v, "Mi_Cartera", df_c_nuevo, max_filas=1000)
-                            subir_dataframe_gsheets(sh_v, "Mis_Alertas", df_al_nuevo, max_filas=500)
-                        except Exception:
-                            pass
-    except KeyboardInterrupt:
-        print("\n🛑 Modo Vigilante detenido manualmente.")
+    while True:
+        ejecutar_ciclo_radar("1", ocultar_navegador=True)
+        time.sleep(INTERVALO_VIGILANTE_MIN * 60)
 else:
     ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=modo_auto)
