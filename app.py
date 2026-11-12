@@ -122,9 +122,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ==========================================
-# FUNCIONES MATEMÁTICAS, HORA ARG Y ESTILOS
-# ==========================================
 def ahora_arg():
     tz_arg = timezone(timedelta(hours=-3))
     return datetime.now(tz_arg).replace(tzinfo=None)
@@ -232,9 +229,6 @@ def aplicar_estilo_seguro(df, cols_neto=None, cols_accion=None):
     except Exception:
         return df
 
-# ==========================================
-# GESTIÓN DE ENLACE Y SINCRONIZACIÓN DE DATOS
-# ==========================================
 def obtener_link_guardado():
     if LINK_GOOGLE_SHEET.strip():
         return LINK_GOOGLE_SHEET.strip()
@@ -277,6 +271,16 @@ def convertir_columnas_numericas(df):
             df[c] = pd.to_numeric(s, errors="coerce").fillna(0)
     return df
 
+def limpiar_escaneos_corruptos(df):
+    """Filtra automáticamente cualquier fila corrupta donde FUT.GG haya repetido 36000 con Media ??."""
+    if df is None or df.empty or "Jugador" not in df.columns or "Precio_Actual" not in df.columns:
+        return pd.DataFrame()
+    mask_corrupta = (
+        df["Jugador"].astype(str).str.contains(r"Media \?\?", na=False)
+        & (df["Precio_Actual"].apply(num_seguro) == 36000)
+    )
+    return df[~mask_corrupta].copy()
+
 @st.cache_data(ttl=30)
 def cargar_por_id_publico(sheet_id):
     hojas = {}
@@ -294,7 +298,7 @@ def cargar_por_id_publico(sheet_id):
             df_h = df_h.loc[:, ~df_h.columns.str.contains("^Unnamed")]
             if h == "Historial_Tendencias":
                 df_base_comparacion = df_h.copy()
-                hojas[h] = convertir_columnas_numericas(df_h)
+                hojas[h] = limpiar_escaneos_corruptos(convertir_columnas_numericas(df_h))
             else:
                 if (
                     df_base_comparacion is not None
@@ -358,7 +362,6 @@ try:
     msg_error = ""
     estado_conexion = "⚠️ Sin conexión a datos"
 
-    # --- INICIO DEL BLOQUE ACTUALIZADO (COMBINA SHEETS + GITHUB AUTO-SYNC) ---
     if sheet_id:
         datos, msg_error = cargar_por_id_publico(sheet_id)
         if msg_error == "OK":
@@ -366,15 +369,24 @@ try:
 
     if os.path.exists(ARCHIVO_EXCEL):
         try:
-            df_hist_excel = convertir_columnas_numericas(pd.read_excel(ARCHIVO_EXCEL, sheet_name="Historial_Tendencias"))
-            fecha_excel = str(df_hist_excel["Fecha"].max()) if not df_hist_excel.empty and "Fecha" in df_hist_excel.columns else ""
+            df_hist_excel = limpiar_escaneos_corruptos(
+                convertir_columnas_numericas(pd.read_excel(ARCHIVO_EXCEL, sheet_name="Historial_Tendencias"))
+            )
+            # Solo usar el Excel local si tiene precios de Futbin válidos (> 0)
+            tiene_futbin_valido = (
+                not df_hist_excel.empty
+                and "Precio_Futbin" in df_hist_excel.columns
+                and (df_hist_excel["Precio_Futbin"].apply(num_seguro) > 0).sum() >= 50
+            )
+            fecha_excel = str(df_hist_excel["Fecha"].max()) if tiene_futbin_valido and "Fecha" in df_hist_excel.columns else ""
             fecha_sheet = str(datos.get("Historial_Tendencias", pd.DataFrame()).get("Fecha", pd.Series([""])).max()) if datos else ""
 
-            if fecha_excel and (not datos or fecha_excel >= fecha_sheet):
+            if tiene_futbin_valido and (not datos or fecha_excel >= fecha_sheet):
                 cartera_respaldo = datos.get("Mi_Cartera", pd.DataFrame()) if datos else pd.DataFrame()
                 alertas_respaldo = datos.get("Mis_Alertas", pd.DataFrame()) if datos else pd.DataFrame()
+                datos["Historial_Tendencias"] = df_hist_excel
                 for h in [
-                    "Historial_Tendencias", "Recomendacion_IA", "Dashboard_Financiero",
+                    "Recomendacion_IA", "Dashboard_Financiero",
                     "Radar_Fodder", "Arbitraje_FUTGG", "Radar_Evos", "Radar_TOTW", "Radar_Links_Domino"
                 ]:
                     try:
@@ -399,9 +411,7 @@ try:
                 estado_conexion = "☁️ Conectado a Nube 24/7 (GitHub Auto-Sync + Sheets)"
         except Exception:
             pass
-    # --- FIN DEL BLOQUE ACTUALIZADO ---
 
-    # Integrar cambios guardados en la sesión o en el contenedor Cloud
     if datos:
         if "override_Mi_Cartera" in st.session_state:
             datos["Mi_Cartera"] = convertir_columnas_numericas(st.session_state["override_Mi_Cartera"])
@@ -423,9 +433,7 @@ try:
             except Exception:
                 pass
 
-    # ==========================================
-    # BARRA LATERAL COMPLETA (SIDEBAR)
-    # ==========================================
+    # BARRA LATERAL COMPLETA
     with st.sidebar:
         st.markdown("## 🛠️ Centro de Mando")
         st.caption(estado_conexion)
@@ -545,9 +553,7 @@ try:
                 st.cache_data.clear()
                 st.rerun()
 
-    # ==========================================
-    # CABECERA PRINCIPAL + RELOJ 15:00 HS ARG
-    # ==========================================
+    # CABECERA PRINCIPAL
     df_historial = datos.get("Historial_Tendencias", pd.DataFrame())
     ultima_act = str(df_historial["Fecha"].max()) if not df_historial.empty and "Fecha" in df_historial.columns else "Sin escaneo"
     df_ult_corte = df_historial[df_historial["Fecha"] == ultima_act].copy() if not df_historial.empty and "Fecha" in df_historial.columns else pd.DataFrame()
@@ -579,9 +585,7 @@ try:
             st.rerun()
         st.stop()
 
-    # ==========================================
-    # TARJETAS KPI FINANCIERAS MULTICOLOR
-    # ==========================================
+    # TARJETAS KPI FINANCIERAS
     df_cartera = datos.get("Mi_Cartera", pd.DataFrame()).copy()
     if not df_cartera.empty and "Estado" in df_cartera.columns:
         for idx_c, r_c in df_cartera.iterrows():
@@ -684,9 +688,6 @@ try:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ==========================================
-    # PESTAÑAS INTERACTIVAS COMPLETAS
-    # ==========================================
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Cartera, P&L & Curva Capital",
         "⚡ Radar 1-Clic & Lupa Histórica",
