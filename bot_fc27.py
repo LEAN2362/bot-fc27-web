@@ -1204,8 +1204,38 @@ def crear_navegador_optimizado(ocultar=False):
     page.set.timeouts(page_load=10)
     return page
 
+def extraer_precio_carta_unica_gg(texto_card, presupuesto_max):
+    if not texto_card:
+        return 0
+    # 1. Buscar primero precios abreviados (ej: 14.5K, 120K, 3.2M)
+    precios_km = re.findall(r'(\d+(?:\.\d+)?)\s*([KkMm])\b', texto_card)
+    for num_s, unidad in precios_km:
+        mult = 1000000 if unidad.upper() == 'M' else 1000
+        val = int(round(float(num_s) * mult))
+        if val > presupuesto_max:
+            return 0  # Si la carta vale más de 200k (ej: Mbappé 3M), descartarla de inmediato
+        if 200 <= val <= presupuesto_max:
+            return val
+
+    # 2. Buscar precios con separador de miles (ej: 12,500)
+    precios_comas = re.findall(r'\b(\d{1,3}(?:,\d{3})+)\b', texto_card)
+    for p_c in precios_comas:
+        val = int(p_c.replace(',', ''))
+        if val > presupuesto_max:
+            return 0
+        if 200 <= val <= presupuesto_max:
+            return val
+
+    # 3. Buscar enteros múltiplos de 50
+    enteros = re.findall(r'\b(\d{3,6})\b', texto_card)
+    for ent in enteros:
+        val = int(ent)
+        if 200 <= val <= presupuesto_max and (val % 50 == 0):
+            return val
+    return 0
+
 def escanear_futgg(page, presupuesto_max, max_paginas=45):
-    print(f"\n⚡ Iniciando escaneo ampliado en FUT.GG PC ({max_paginas} páginas <= {presupuesto_max//1000}k)...")
+    print(f"\n⚡ Iniciando escaneo aislado por carta en FUT.GG PC ({max_paginas} páginas <= {presupuesto_max//1000}k)...")
     jugadores_gg = []
     vistos_gg = set()
 
@@ -1216,30 +1246,38 @@ def escanear_futgg(page, presupuesto_max, max_paginas=45):
         try {
             localStorage.setItem('platform', 'pc');
             document.cookie = "platform=pc; path=/; max-age=31536000";
-            let bs = document.querySelectorAll('button, div, span');
-            for (let b of bs) {
-                if (b.textContent.trim() === 'PC') { b.click(); break; }
-            }
         } catch(e) {}
         """)
-        page.wait(0.5)
     except Exception:
         pass
 
+    # Este script sube únicamente hasta el contenedor individual de CADA carta (jamás toca la grilla general)
     script_gg = """
     window.scrollTo(0, document.body.scrollHeight / 2);
+    function contarLinksJugador(el) {
+        if (!el) return 99;
+        let ls = el.querySelectorAll('a[href*="/players/"]');
+        let s = new Set();
+        for (let l of ls) {
+            let h = (l.getAttribute('href') || '').split('?')[0];
+            if (h.match(/\\/players\\/\\d+-/)) s.add(h);
+        }
+        return s.size;
+    }
     let items = [];
     let enlaces = document.querySelectorAll('a[href*="/players/"]');
     for (let a of enlaces) {
         let href = a.getAttribute('href') || '';
         if (!href.match(/\\/players\\/\\d+-/)) continue;
-        let p1 = a.parentElement;
-        let p2 = p1 ? p1.parentElement : null;
-        let p3 = p2 ? p2.parentElement : null;
-        let texto_card = (a.innerText || a.textContent || '') + '\\n' +
-                         (p1 ? (p1.innerText || p1.textContent) : '') + '\\n' +
-                         (p2 ? (p2.innerText || p2.textContent) : '') + '\\n' +
-                         (p3 ? (p3.innerText || p3.textContent) : '');
+        let box = a;
+        while (box.parentElement && contarLinksJugador(box.parentElement) === 1) {
+            box = box.parentElement;
+        }
+        let alts = [];
+        for (let img of box.querySelectorAll('img[alt]')) {
+            alts.push(img.getAttribute('alt') || '');
+        }
+        let texto_card = alts.join(' | ') + '\\n' + (box.innerText || box.textContent || '');
         items.push({'href': href, 'texto': texto_card});
     }
     return items;
@@ -1249,15 +1287,10 @@ def escanear_futgg(page, presupuesto_max, max_paginas=45):
     for pag in range(1, max_paginas + 1):
         if len(jugadores_gg) >= MAX_JUGADORES:
             break
-        url_gg = f"https://www.fut.gg/players/?page={pag}&platform=pc&price_min=200&price_max={presupuesto_max}&min_price=200&max_price={presupuesto_max}"
+        url_gg = f"https://www.fut.gg/players/?page={pag}&price__gte=200&price__lte={presupuesto_max}"
         print(f"🌐 FUT.GG PC Página {pag}/{max_paginas}... (Capturados GG: {len(jugadores_gg)})")
         try:
             page.get(url_gg)
-        except Exception:
-            pass
-        try:
-            if "moment" in page.title.lower() or "__cf_chl" in page.url:
-                page.wait(4)
             page.ele('xpath://a[contains(@href, "/players/")]', timeout=4)
             page.wait(random.uniform(0.75, 1.05))
             page.stop_loading()
@@ -1276,28 +1309,31 @@ def escanear_futgg(page, presupuesto_max, max_paginas=45):
                 continue
             nombre_gg = match_slug.group(1).replace('-', ' ').title()
             texto = item.get('texto', '')
-            lineas = [l.strip() for l in texto.split('\n') if l.strip()]
 
+            # Extraer precio exclusivo de la caja de esta carta
+            valor_gg = extraer_precio_carta_unica_gg(texto, presupuesto_max)
+            if not (200 <= valor_gg <= presupuesto_max):
+                continue
+
+            # Extraer Media (de texto o del atributo alt de la imagen)
             media = "??"
-            for l in lineas:
-                if l.isdigit() and 45 <= int(l) <= 99:
-                    media = l
+            m_alt = re.findall(r'\b([6-9]\d)\b', texto)
+            for cand_m in m_alt:
+                if 65 <= int(cand_m) <= 99 and int(cand_m) != valor_gg:
+                    media = cand_m
                     break
 
-            valor_gg = extraer_precio_robusto(texto, "", presupuesto_max)
-
-            if 200 <= valor_gg <= presupuesto_max:
-                vistos_gg.add(href_limpio)
-                nuevos_en_pagina += 1
-                nombre_fmt = f"{nombre_gg} (Media {media})"
-                jugadores_gg.append({
-                    "Jugador_GG": nombre_fmt,
-                    "Nombre_Puro": sin_tildes(nombre_gg).lower(),
-                    "Media": media,
-                    "Precio_FUTGG": valor_gg,
-                    "Clave": clave_cruce(nombre_fmt),
-                    "Enlace_GG": f"https://www.fut.gg{href_limpio}" if href_limpio.startswith('/') else href_limpio
-                })
+            vistos_gg.add(href_limpio)
+            nuevos_en_pagina += 1
+            nombre_fmt = f"{nombre_gg} (Media {media})"
+            jugadores_gg.append({
+                "Jugador_GG": nombre_fmt,
+                "Nombre_Puro": sin_tildes(nombre_gg).lower(),
+                "Media": media,
+                "Precio_FUTGG": valor_gg,
+                "Clave": clave_cruce(nombre_fmt),
+                "Enlace_GG": f"https://www.fut.gg{href_limpio}" if href_limpio.startswith('/') else href_limpio
+            })
 
         if nuevos_en_pagina == 0:
             paginas_vacias_seguidas += 1
@@ -1306,7 +1342,7 @@ def escanear_futgg(page, presupuesto_max, max_paginas=45):
         else:
             paginas_vacias_seguidas = 0
 
-    print(f"✅ ¡FUT.GG PC completado! {len(jugadores_gg)} cartas extraídas para la Base Dual.")
+    print(f"✅ ¡FUT.GG PC completado! {len(jugadores_gg)} cartas reales extraídas.")
     return jugadores_gg
 
 def cruzar_futbin_futgg(datos_unificados, datos_futgg):
