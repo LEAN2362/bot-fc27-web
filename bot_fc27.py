@@ -1888,7 +1888,80 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
         return data;
         """
 
+        paginas_fb_vacias = 0
         for num_pag in range(1, 85):
+            if len(jugadores_tendencia) >= MAX_JUGADORES:
+                break
+            url = f"https://www.futbin.com/27/players?page={num_pag}&pc_price=200-{PRESUPUESTO_MAXIMO}"
+            print(f"⚡ Futbin PC Pág {num_pag}... (Capturados FB: {len(jugadores_tendencia)}/{MAX_JUGADORES})")
+            try:
+                page_activa.get(url)
+            except Exception:
+                pass
+            try:
+                if not page_activa.ele('xpath://a[contains(@href, "/player/")]', timeout=4):
+                    paginas_fb_vacias += 1
+                    if paginas_fb_vacias >= 3:
+                        print("⏩ Futbin bloqueado por Cloudflare en este servidor. Saltando directo a FUT.GG...")
+                        break
+                    continue
+                page_activa.wait(random.uniform(0.50, 0.80))
+                page_activa.stop_loading()
+                datos_pagina = page_activa.run_js(script_js)
+            except Exception:
+                paginas_fb_vacias += 1
+                if paginas_fb_vacias >= 3:
+                    break
+                continue
+
+            antes_pag = len(jugadores_tendencia)
+            for item in (datos_pagina or []):
+                if len(jugadores_tendencia) >= MAX_JUGADORES:
+                    break
+                href = item.get('href', '')
+                texto_fila = item.get('texto_fila', '')
+                texto_precio = item.get('texto_precio', '')
+
+                if not href or '/player/' not in href or href in enlaces_vistos:
+                    continue
+                if 'SBC' in texto_fila.upper() or 'OBJECTIVE' in texto_fila.upper():
+                    continue
+
+                partes_url = [p for p in href.split('/') if p]
+                nombre_url = partes_url[-1].replace('-', ' ').title() if partes_url else "Jugador"
+                lineas = [l.strip() for l in texto_fila.split('\n') if l.strip()]
+
+                media = item.get('media', '??')
+                if media == "??":
+                    for l in lineas[:5]:
+                        if l.isdigit() and 45 <= int(l) <= 99:
+                            media = l
+                            break
+
+                tipo_carta = "Normal"
+                for l in lineas:
+                    if l.isdigit() or '++' in l.upper() or '\\' in l or '/' in l:
+                        continue
+                    if len(l) >= 3 and not re.search(r'\d', l):
+                        tipo_carta = l
+                        break
+
+                valor_actual = extraer_precio_robusto(texto_precio, texto_fila, PRESUPUESTO_MAXIMO)
+
+                if 200 <= valor_actual <= PRESUPUESTO_MAXIMO:
+                    enlaces_vistos.add(href)
+                    jugadores_tendencia.append({
+                        "Jugador": f"{nombre_url} (Media {media} - {tipo_carta})",
+                        "Enlace": f"https://www.futbin.com{href}" if href.startswith('/') else href,
+                        "Precio_Actual": valor_actual
+                    })
+
+            if len(jugadores_tendencia) == antes_pag:
+                paginas_fb_vacias += 1
+                if paginas_fb_vacias >= 3:
+                    break
+            else:
+                paginas_fb_vacias = 0
             if len(jugadores_tendencia) >= MAX_JUGADORES:
                 break
             url = f"https://www.futbin.com/27/players?page={num_pag}&pc_price=200-{PRESUPUESTO_MAXIMO}"
