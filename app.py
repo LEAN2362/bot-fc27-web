@@ -20,8 +20,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ⬇️ PEGÁ ACÁ ENTRE LAS COMILLAS EL VÍNCULO DE TU GOOGLE SHEETS ("Copiar vínculo") ⬇️
-LINK_GOOGLE_SHEET = "https://docs.google.com/spreadsheets/d/1JDSpJGB6SaPe53cTMMKCdr-OMzzDZPnPsXc4YiS1DjE/edit?usp=sharing"
+# ⬇️ SI QUERÉS DEJAR TU LINK FIJO, PEGALO ACÁ ENTRE LAS COMILLAS ⬇️
+LINK_GOOGLE_SHEET = ""
 
 PRESUPUESTO_TOPE = 200000
 ARCHIVO_EXCEL = "Lista_Jugadores_FC27.xlsx"
@@ -93,15 +93,15 @@ st.markdown("""
     .drop-timer-title { font-size: 0.78rem; color: #84ffff; text-transform: uppercase; font-weight: 700; }
     .drop-timer-val { font-size: 1.35rem; font-weight: 900; color: #ffea00; }
     .kpi-card {
-        padding: 18px 20px;
+        padding: 16px 14px;
         border-radius: 14px;
         color: white;
         box-shadow: 0 8px 20px rgba(0,0,0,0.35);
         margin-bottom: 10px;
     }
-    .kpi-title { font-size: 0.85rem; font-weight: 700; text-transform: uppercase; opacity: 0.92; margin-bottom: 6px; }
-    .kpi-value { font-size: 1.7rem; font-weight: 900; margin-bottom: 8px; }
-    .kpi-badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 700; background: rgba(0, 0, 0, 0.35); }
+    .kpi-title { font-size: 0.80rem; font-weight: 700; text-transform: uppercase; opacity: 0.92; margin-bottom: 6px; }
+    .kpi-value { font-size: 1.35rem; font-weight: 900; margin-bottom: 8px; white-space: nowrap; }
+    .kpi-badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; background: rgba(0, 0, 0, 0.35); }
     .kpi-green { background: linear-gradient(135deg, #054f31 0%, #00a86b 100%); border: 1px solid #00e676; }
     .kpi-blue { background: linear-gradient(135deg, #0d2b6b 0%, #1e62d0 100%); border: 1px solid #00e5ff; }
     .kpi-purple { background: linear-gradient(135deg, #3b0d6b 0%, #7b2cbf 100%); border: 1px solid #e040fb; }
@@ -312,7 +312,6 @@ def cargar_por_id_publico(sheet_id):
     return {}, "No se pudo leer 'Historial_Tendencias'. Verificá que en 'Compartir' diga 'Cualquier persona con el vínculo'."
 
 def guardar_hoja_sincronizada(df_guardar, nombre_hoja):
-    # 1. Guardar inmediatamente en memoria de sesión y archivo persistente del servidor
     st.session_state[f"override_{nombre_hoja}"] = df_guardar.copy()
     try:
         if nombre_hoja == "Mi_Cartera":
@@ -322,7 +321,6 @@ def guardar_hoja_sincronizada(df_guardar, nombre_hoja):
     except Exception:
         pass
 
-    # 2. Intentar sincronizar con Google Sheets si hay credenciales válidas
     if os.path.exists(ARCHIVO_CRED):
         try:
             import gspread
@@ -339,7 +337,6 @@ def guardar_hoja_sincronizada(df_guardar, nombre_hoja):
         except Exception:
             pass
 
-    # 3. Guardar en Excel local si corre en PC
     if os.path.exists(ARCHIVO_EXCEL):
         try:
             with pd.ExcelWriter(ARCHIVO_EXCEL, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
@@ -361,23 +358,48 @@ try:
     msg_error = ""
     estado_conexion = "⚠️ Sin conexión a datos"
 
+    # --- INICIO DEL BLOQUE ACTUALIZADO (COMBINA SHEETS + GITHUB AUTO-SYNC) ---
     if sheet_id:
         datos, msg_error = cargar_por_id_publico(sheet_id)
         if msg_error == "OK":
             estado_conexion = "☁️ Conectado a Google Sheets (Nube 24/7)"
 
-    if not datos and os.path.exists(ARCHIVO_EXCEL):
-        for h in [
-            "Historial_Tendencias", "Mi_Cartera", "Recomendacion_IA",
-            "Dashboard_Financiero", "Radar_Fodder", "Arbitraje_FUTGG",
-            "Radar_Evos", "Radar_TOTW", "Radar_Links_Domino", "Mis_Alertas"
-        ]:
-            try:
-                datos[h] = convertir_columnas_numericas(pd.read_excel(ARCHIVO_EXCEL, sheet_name=h))
-            except Exception:
-                datos[h] = pd.DataFrame()
-        if not datos.get("Historial_Tendencias", pd.DataFrame()).empty:
-            estado_conexion = "💻 Conectado a Excel Local"
+    if os.path.exists(ARCHIVO_EXCEL):
+        try:
+            df_hist_excel = convertir_columnas_numericas(pd.read_excel(ARCHIVO_EXCEL, sheet_name="Historial_Tendencias"))
+            fecha_excel = str(df_hist_excel["Fecha"].max()) if not df_hist_excel.empty and "Fecha" in df_hist_excel.columns else ""
+            fecha_sheet = str(datos.get("Historial_Tendencias", pd.DataFrame()).get("Fecha", pd.Series([""])).max()) if datos else ""
+
+            if fecha_excel and (not datos or fecha_excel >= fecha_sheet):
+                cartera_respaldo = datos.get("Mi_Cartera", pd.DataFrame()) if datos else pd.DataFrame()
+                alertas_respaldo = datos.get("Mis_Alertas", pd.DataFrame()) if datos else pd.DataFrame()
+                for h in [
+                    "Historial_Tendencias", "Recomendacion_IA", "Dashboard_Financiero",
+                    "Radar_Fodder", "Arbitraje_FUTGG", "Radar_Evos", "Radar_TOTW", "Radar_Links_Domino"
+                ]:
+                    try:
+                        datos[h] = convertir_columnas_numericas(pd.read_excel(ARCHIVO_EXCEL, sheet_name=h))
+                    except Exception:
+                        if h not in datos:
+                            datos[h] = pd.DataFrame()
+                if not cartera_respaldo.empty:
+                    datos["Mi_Cartera"] = cartera_respaldo
+                elif "Mi_Cartera" not in datos or datos["Mi_Cartera"].empty:
+                    try:
+                        datos["Mi_Cartera"] = convertir_columnas_numericas(pd.read_excel(ARCHIVO_EXCEL, sheet_name="Mi_Cartera"))
+                    except Exception:
+                        datos["Mi_Cartera"] = pd.DataFrame()
+                if not alertas_respaldo.empty:
+                    datos["Mis_Alertas"] = alertas_respaldo
+                elif "Mis_Alertas" not in datos or datos["Mis_Alertas"].empty:
+                    try:
+                        datos["Mis_Alertas"] = convertir_columnas_numericas(pd.read_excel(ARCHIVO_EXCEL, sheet_name="Mis_Alertas"))
+                    except Exception:
+                        datos["Mis_Alertas"] = pd.DataFrame()
+                estado_conexion = "☁️ Conectado a Nube 24/7 (GitHub Auto-Sync + Sheets)"
+        except Exception:
+            pass
+    # --- FIN DEL BLOQUE ACTUALIZADO ---
 
     # Integrar cambios guardados en la sesión o en el contenedor Cloud
     if datos:
@@ -473,7 +495,6 @@ try:
         st.markdown("### 💰 Cerrar / Corregir Venta")
         df_cartera_sb = datos.get("Mi_Cartera", pd.DataFrame()).copy()
         if not df_cartera_sb.empty and "Estado" in df_cartera_sb.columns:
-            # Permite vender cartas activas o corregir cartas vendidas que hayan quedado con Precio_Venta en 0
             mask_vendibles = (df_cartera_sb["Estado"].astype(str).str.strip() == "Activo") | (
                 (df_cartera_sb["Estado"].astype(str).str.strip() == "Vendido") & (df_cartera_sb["Precio_Venta"].apply(num_seguro) == 0)
             )
@@ -563,7 +584,6 @@ try:
     # ==========================================
     df_cartera = datos.get("Mi_Cartera", pd.DataFrame()).copy()
     if not df_cartera.empty and "Estado" in df_cartera.columns:
-        # Recalcular automáticamente Ganancia_Neta y ROI_% si Precio_Venta > 0 pero estaban en 0
         for idx_c, r_c in df_cartera.iterrows():
             p_v_row = num_seguro(r_c.get("Precio_Venta", 0), 0)
             p_p_row = num_seguro(r_c.get("Precio_Pagado", 0), 0)
@@ -652,15 +672,15 @@ try:
 
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
-        st.markdown(f"""<div class="kpi-card kpi-green"><div class="kpi-title">💵 Liquidez Disponible (Caja)</div><div class="kpi-value">{liquidez_disp:,} mnds</div><div class="kpi-badge">🟢 {round(liquidez_disp/PRESUPUESTO_TOPE*100)}% del presupuesto</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-green"><div class="kpi-title">💵 Liquidez Disponible</div><div class="kpi-value">{liquidez_disp:,} mnds</div><div class="kpi-badge">🟢 {round(liquidez_disp/PRESUPUESTO_TOPE*100)}% del tope</div></div>""", unsafe_allow_html=True)
     with k2:
         st.markdown(f"""<div class="kpi-card kpi-blue"><div class="kpi-title">📦 Capital Inmovilizado</div><div class="kpi-value">{cap_inmovilizado:,} mnds</div><div class="kpi-badge">🃏 {len(activos)} cartas en club</div></div>""", unsafe_allow_html=True)
     with k3:
-        st.markdown(f"""<div class="kpi-card {color_vnr}"><div class="kpi-title">📈 Stock a VNR (Post 5% Tax)</div><div class="kpi-value">{vnr_total:,} mnds</div><div class="kpi-badge">⚖️ Tenencia: {tenencia_total:+,} mnds</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card {color_vnr}"><div class="kpi-title">📈 Stock a VNR (5% Tax)</div><div class="kpi-value">{vnr_total:,} mnds</div><div class="kpi-badge">⚖️ Tenencia: {tenencia_total:+,}</div></div>""", unsafe_allow_html=True)
     with k4:
-        st.markdown(f"""<div class="kpi-card kpi-gold"><div class="kpi-title">💰 Ganancia Neta Realizada</div><div class="kpi-value">{ganancia_realizada:+,} mnds</div><div class="kpi-badge">📈 {len(vendidos)} ventas cerradas</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-gold"><div class="kpi-title">💰 Ganancia Realizada</div><div class="kpi-value">{ganancia_realizada:+,} mnds</div><div class="kpi-badge">📈 {len(vendidos)} ventas cerradas</div></div>""", unsafe_allow_html=True)
     with k5:
-        st.markdown(f"""<div class="kpi-card kpi-purple"><div class="kpi-title">🎯 Efectividad de Trading</div><div class="kpi-value">{efectividad}%</div><div class="kpi-badge">🏆 {aciertos}/{len(vendidos)} trades positivos</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-purple"><div class="kpi-title">🎯 Efectividad Trading</div><div class="kpi-value">{efectividad}%</div><div class="kpi-badge">🏆 {aciertos}/{len(vendidos)} positivos</div></div>""", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -729,7 +749,6 @@ try:
         with col_pnl1:
             st.subheader("📑 Estado de Resultados (Modelo Costeo Variable)")
             ventas_brutas = int(vendidos["Precio_Venta"].apply(num_seguro).sum()) if not vendidos.empty and "Precio_Venta" in vendidos.columns else 0
-            # Solo sumar CMV de ventas que ya tengan Precio_Venta cargado (> 0)
             if not vendidos.empty and "Precio_Venta" in vendidos.columns and "Precio_Pagado" in vendidos.columns:
                 vendidos_liquidados = vendidos[vendidos["Precio_Venta"].apply(num_seguro) > 0]
                 costo_adq = int(vendidos_liquidados["Precio_Pagado"].apply(num_seguro).sum())
