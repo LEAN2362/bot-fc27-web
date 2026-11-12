@@ -5,6 +5,9 @@ on:
     - cron: '*/30 * * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   actualizar-base:
     runs-on: ubuntu-latest
@@ -27,11 +30,14 @@ jobs:
         pip install -r requirements.txt
         pip install DrissionPage google-genai requests openpyxl gspread pandas
 
-    - name: 🔐 Crear archivo de credenciales de Google
-      env:
-        GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-      run: |
-        echo "$GCP_CREDENTIALS" > credenciales_google.json
-
     - name: 🚀 Ejecutar el bot recolector
       run: python bot_fc27.py auto
+
+    - name: 💾 Guardar precios actualizados directo en GitHub
+      run: |
+        git config --global user.name "Bot FC27 Auto"
+        git config --global user.email "bot@fc27.local"
+        git add Lista_Jugadores_FC27.xlsx
+        git commit -m "🔄 Actualización automática de precios FC27" || echo "Sin cambios para subir"
+        git pull --rebase origin main || true
+        git push origin main
