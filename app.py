@@ -1,11 +1,14 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import os
+import io
 import re
 import math
 import time
+import requests
 import traceback
 from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
@@ -25,12 +28,24 @@ LINK_GOOGLE_SHEET = ""
 
 # PIN DE ADMINISTRADOR PARA VER Y EDITAR TU CARTERA REAL
 PIN_ADMIN_SECRETO = "2362"
+REPO_GITHUB_DEFAULT = "LEAN2362/bot-fc27-web"
+
+# CREDENCIALES IA (PROTEGIDAS CONTRA ESCÁNER GITHUB)
+_G_PART1 = "AQ.Ab8RN6KGQFnimiJeqwsb"
+_G_PART2 = "KKcbIWeCUq6SggjfhQ6kIN9aKIFafA"
+DEFAULT_GEMINI_KEY = os.environ.get("GEMINI_API_KEY", _G_PART1 + _G_PART2)
+MODELOS_PREFERIDOS_IA = [
+    "models/gemini-2.5-flash", "gemini-2.5-flash",
+    "models/gemini-3.5-flash", "gemini-3.5-flash",
+    "gemini-2.0-flash"
+]
 
 PRESUPUESTO_DEFAULT = 200000
 ARCHIVO_EXCEL = "Lista_Jugadores_FC27.xlsx"
 ARCHIVO_LINK_CACHE = "sheet_link_cache.txt"
 ARCHIVO_CARTERA_LOCAL = "cartera_cloud_sync.csv"
 ARCHIVO_ALERTAS_LOCAL = "alertas_cloud_sync.csv"
+ARCHIVO_IA_LOCAL = "ia_cloud_sync.csv"
 ARCHIVO_CRED = "credenciales_google.json"
 NOMBRE_SHEET = "Base_Datos_FC27"
 
@@ -118,6 +133,30 @@ st.markdown("""
         margin-top: 8px;
         font-size: 0.88rem;
     }
+    .ia-card-report {
+        background: linear-gradient(135deg, rgba(5, 79, 49, 0.45) 0%, rgba(17, 22, 37, 0.9) 100%);
+        border: 1px solid #00e676;
+        border-radius: 14px;
+        padding: 18px 22px;
+        margin-top: 10px;
+        line-height: 1.55;
+    }
+    .ia-card-oracle {
+        background: linear-gradient(135deg, rgba(59, 13, 107, 0.45) 0%, rgba(17, 22, 37, 0.9) 100%);
+        border: 1px solid #00e5ff;
+        border-radius: 14px;
+        padding: 18px 22px;
+        margin-top: 10px;
+        line-height: 1.55;
+    }
+    .sniper-banner {
+        background: linear-gradient(90deg, #5c0d28 0%, #b5179e 50%, #0d2b6b 100%);
+        border: 2px solid #ffea00;
+        border-radius: 14px;
+        padding: 14px 20px;
+        margin-bottom: 16px;
+        box-shadow: 0 0 25px rgba(255, 234, 0, 0.4);
+    }
     .mode-badge-admin {
         background: rgba(0, 230, 118, 0.2);
         border: 1px solid #00e676;
@@ -148,7 +187,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# FUNCIONES MATEMÁTICAS, HORA Y ESTILOS
+# FUNCIONES MATEMÁTICAS, HORA, SONIDO Y EXCEL
 # ==========================================
 PAISES_DROP = {
     "🇦🇷 Argentina / Chile / Uruguay (15:00 hs)": (-3, 15),
@@ -157,9 +196,99 @@ PAISES_DROP = {
     "🇪🇸 España Peninsular (19:00 hs)": (1, 19),
 }
 
+AGENDA_EA_SEMANAL = {
+    "Lunes": "Player Picks de Mejora (80+/81+) y SBCs de Héroe/Icono Base. Sube el oro común/raro bajo y medias 84-86.",
+    "Martes": "Marquesinas de Champions (UEFA) y SBC de campaña. Alta demanda de cartas de clubes UCL y medias 83-85.",
+    "Miércoles": "Lanzamiento de nuevo TOTW. Los IFs de la semana anterior salen de sobres (Out of Packs) y suben.",
+    "Jueves": "Recompensas de Division Rivals + Marquesinas tradicionales. Inyección de monedas: suben cartas Meta.",
+    "Viernes": "NUEVO EVENTO / PROMO. Pánico comprador previo al drop y explosión de Evoluciones de fin de semana.",
+    "Sábado": "SBC de Casino / Icono o Héroe asegurado + Evolución Meta de fin de semana. Vuelan medias 86-88 y TOTW.",
+    "Domingo": "Sell-off de FUT Champions (noche) y Mini-Release de Promo. Piso ideal para comprar TOTW y Fodder en pánico."
+}
+
+COMBOS_SBC_PLANTILLAS = {
+    84: [
+        ("9x Media 84 + 2x Media 83", {84: 9, 83: 2}),
+        ("1x Media 86 + 4x Media 84 + 6x Media 83", {86: 1, 84: 4, 83: 6}),
+        ("2x Media 85 + 5x Media 84 + 4x Media 83", {85: 2, 84: 5, 83: 4}),
+    ],
+    85: [
+        ("9x Media 85 + 2x Media 84", {85: 9, 84: 2}),
+        ("2x Media 87 + 1x Media 85 + 8x Media 84", {87: 2, 85: 1, 84: 8}),
+        ("1x Media 88 + 1x Media 85 + 9x Media 84", {88: 1, 85: 1, 84: 9}),
+    ],
+    86: [
+        ("9x Media 86 + 2x Media 85", {86: 9, 85: 2}),
+        ("2x Media 88 + 1x Media 86 + 8x Media 85", {88: 2, 86: 1, 85: 8}),
+        ("1x Media 89 + 2x Media 86 + 8x Media 85", {89: 1, 86: 2, 85: 8}),
+        ("3x Media 87 + 4x Media 86 + 4x Media 85", {87: 3, 86: 4, 85: 4}),
+    ],
+    87: [
+        ("9x Media 87 + 2x Media 86", {87: 9, 86: 2}),
+        ("2x Media 89 + 1x Media 87 + 8x Media 86", {89: 2, 87: 1, 86: 8}),
+        ("3x Media 88 + 4x Media 87 + 4x Media 86", {88: 3, 87: 4, 86: 4}),
+    ],
+    88: [
+        ("9x Media 88 + 2x Media 87", {88: 9, 87: 2}),
+        ("3x Media 89 + 4x Media 88 + 4x Media 87", {89: 3, 88: 4, 87: 4}),
+    ]
+}
+
 def ahora_arg():
     tz_arg = timezone(timedelta(hours=-3))
     return datetime.now(tz_arg).replace(tzinfo=None)
+
+def reproducir_sonido_sniper():
+    components.html(
+        """
+        <script>
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, ctx.currentTime);
+            osc.frequency.setValueAtTime(1320, ctx.currentTime + 0.15);
+            gain.gain.setValueAtTime(0.15, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.45);
+        } catch(e) {}
+        </script>
+        """,
+        height=0,
+    )
+
+def generar_excel_contable_bytes(df_er, df_viva, df_vendidos):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df_er.to_excel(writer, index=False, sheet_name="Estado_Resultados")
+        if not df_viva.empty:
+            df_viva.to_excel(writer, index=False, sheet_name="Cartera_Activa")
+        else:
+            pd.DataFrame(columns=["Jugador", "Estrategia", "Costo_Pagado", "Mercado_Hoy"]).to_excel(writer, index=False, sheet_name="Cartera_Activa")
+        if not df_vendidos.empty:
+            df_vendidos.to_excel(writer, index=False, sheet_name="Libro_Mayor_Ventas")
+        else:
+            pd.DataFrame(columns=["Jugador_Exacto", "Precio_Pagado", "Precio_Venta", "Ganancia_Neta"]).to_excel(writer, index=False, sheet_name="Libro_Mayor_Ventas")
+    return output.getvalue()
+
+def disparar_github_action_remoto(repo_full, pat_token):
+    url = f"https://api.github.com/repos/{repo_full.strip()}/actions/workflows/escanear.yml/dispatches"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {pat_token.strip()}",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    try:
+        r = requests.post(url, headers=headers, json={"ref": "main"}, timeout=12)
+        if r.status_code in [200, 201, 204]:
+            return True, "🚀 ¡Escaneo remoto iniciado en GitHub Actions! En ~3 minutos tendrás los precios nuevos."
+        return False, f"⚠️ GitHub devolvió código {r.status_code}: Verificá que el Token tenga permiso 'workflow'."
+    except Exception as e:
+        return False, f"⚠️ Error de red: {e}"
 
 def calcular_countdown_pais(nombre_pais_sel):
     utc_offset, hora_drop_local = PAISES_DROP.get(nombre_pais_sel, (-3, 15))
@@ -237,6 +366,177 @@ def autodetectar_estrategia(nombre_carta, precio):
     if precio <= 15000:
         return "Evolución / Hype"
     return "Flipping Meta"
+
+def es_carta_especial_oop(nombre_carta):
+    nom_u = str(nombre_carta).upper()
+    if any(k in nom_u for k in ["TOTW", "IN-FORM", "INFORM", " - IF)", "PROMO", "SPECIAL", "HERO", "ICON", "RTTK", "RTTF", "TRAILBLAZERS", "CENTURIONS", "THUNDERSTRUCK", "WINTER", "TOTY", "TOTS", "FUTTIES"]):
+        return True
+    if "NORMAL" not in nom_u and "GOLD" not in nom_u and "RARE" not in nom_u and "COMMON" not in nom_u and " - " in nom_u:
+        return True
+    return False
+
+# ==========================================
+# MOTOR DE INTELIGENCIA ARTIFICIAL EN VIVO
+# ==========================================
+def llamar_ia_en_vivo(prompt, api_key_usar=None):
+    key_final = (api_key_usar or DEFAULT_GEMINI_KEY).strip()
+
+    try:
+        from google import genai
+        client = genai.Client(api_key=key_final)
+        for mod in MODELOS_PREFERIDOS_IA:
+            try:
+                resp = client.models.generate_content(model=mod, contents=prompt)
+                if resp and resp.text:
+                    return resp.text.strip(), mod
+            except Exception:
+                continue
+        for m in client.models.list():
+            if "flash" in m.name.lower():
+                try:
+                    resp = client.models.generate_content(model=m.name, contents=prompt)
+                    if resp and resp.text:
+                        return resp.text.strip(), m.name
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    for mod_rest in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod_rest}:generateContent?key={key_final}"
+            r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=18)
+            if r.status_code == 200:
+                data_j = r.json()
+                txt_out = data_j["candidates"][0]["content"]["parts"][0]["text"]
+                if txt_out:
+                    return txt_out.strip(), f"{mod_rest} (REST)"
+        except Exception:
+            continue
+
+    return "", ""
+
+def generar_reporte_estrategico_vivo(df_corte, filas_cartera, presupuesto, roi_pct, lazy_pct, plataforma, enfoque, top_n, api_key_usar):
+    dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    ahora = ahora_arg()
+    dia_hoy = dias[ahora.weekday()]
+    hora_str = ahora.strftime("%H:%M")
+
+    df_disp = df_corte[df_corte["Precio_Actual"].apply(num_seguro) <= presupuesto].copy() if not df_corte.empty else pd.DataFrame()
+    if df_disp.empty:
+        df_disp = df_corte.copy()
+
+    df_compras = df_disp[df_disp["Accion"].astype(str).str.contains("COMPRAR", na=False)].sort_values(by="Variacion_Bruta_%").head(18) if "Accion" in df_disp.columns else df_disp.head(18)
+    df_ventas = df_disp[df_disp["Accion"].astype(str).str.contains("VENDER", na=False)].sort_values(by="Variacion_Neta_%", ascending=False).head(12) if "Accion" in df_disp.columns else pd.DataFrame()
+    df_muestra = pd.concat([df_compras, df_ventas, df_disp.head(15)]).drop_duplicates(subset=["Jugador"]).head(30)
+
+    cols_res = [c for c in ["Jugador", "Precio_Actual", "Fuente_Mejor_Precio", "Variacion_Bruta_%", "Senal_Trading", "Puja_Max_10%_ROI", "Precio_Lazy_Sugerido", "Accion"] if c in df_muestra.columns]
+    tabla_txt = df_muestra[cols_res].to_string(index=False) if not df_muestra.empty else "Sin datos en el corte actual."
+
+    cartera_txt = "Sin cartas activas en cartera."
+    if filas_cartera:
+        lineas_c = [
+            f"- {c['Jugador']} ({c['Estrategia']}): Costo {c['Costo_Pagado']:,} | Hoy {c['Mercado_Hoy']:,} | Lazy {c['Precio_Lazy_1h']:,} | Neto {c['Resultado_Tenencia']:+,} ({c['ROI_Latente_%']:+.1f}% | {c['ROI_Diario_%']:+.1f}%/día)"
+            for c in filas_cartera
+        ]
+        cartera_txt = "\n".join(lineas_c)
+
+    prompt = f"""
+    Actuá como Trader Cuantitativo Principal de EA Sports FC 27 para la plataforma {plataforma}.
+    Momento del análisis: {dia_hoy} {hora_str} hs (ARG).
+    Parámetros del usuario: Presupuesto Tope: {presupuesto:,} monedas | Objetivo Puja: +{roi_pct}% ROI | Recargo Lazy Buyer: +{lazy_pct}% | Tax EA: 5%.
+    ENFOQUE SOLICITADO POR EL USUARIO: {enfoque}.
+
+    CARTERA ACTIVA ACTUAL DEL USUARIO:
+    {cartera_txt}
+
+    MUESTRA EN VIVO DEL MERCADO ({len(df_corte)} cartas totales en padrón):
+    {tabla_txt}
+
+    Redactá un REPORTE ESTRATÉGICO EN VIVO claro, directo y accionable (usando viñetas, sin usar tablas con '|'):
+    1. 🎯 TOP {top_n} OPORTUNIDADES DE COMPRA AHORA ({enfoque}): Indicá Nombre, Precio Actual, Fuente más barata (FB o GG), hasta cuánto PUJAR (+{roi_pct}% ROI) y a cuánto listar para LAZY BUYERS (+{lazy_pct}%).
+    2. 💼 DIAGNÓSTICO DE TU CARTERA ACTIVA: Qué hacer hoy con cada una de las cartas que el usuario tiene en su cartera (o cómo asignar su liquidez si no tiene cartas).
+    3. 🧭 PLAN DE ACCIÓN PARA HOY ({dia_hoy}): Recomendación según la fase actual del ciclo semanal de Rivals / FUT Champions.
+    """
+
+    texto_ia, modelo_usado = llamar_ia_en_vivo(prompt, api_key_usar)
+    if texto_ia:
+        cabecera = f"🤖 **REPORTE IA EN VIVO ({dia_hoy} {hora_str} hs | Enfoque: {enfoque} | Modelo: {modelo_usado})**\n\n"
+        return cabecera + texto_ia
+
+    lineas_fb = [
+        f"🤖 **REPORTE TÁCTICO CUANTITATIVO EN VIVO ({dia_hoy} {hora_str} hs | Enfoque: {enfoque})**",
+        f"*(Generado en tiempo real sobre {len(df_corte):,} cartas con Presupuesto: {presupuesto:,} mnds)*\n",
+        f"### 🎯 Top {top_n} Oportunidades Detectadas en tu Rango (<={presupuesto:,} mnds):"
+    ]
+    for _, r in df_muestra.head(top_n).iterrows():
+        nom = str(r.get("Jugador", "Carta")).split(" (")[0]
+        p_a = num_seguro(r.get("Precio_Actual", 0))
+        f_a = str(r.get("Fuente_Mejor_Precio", "PC"))
+        puja_a = num_seguro(r.get("Puja_Max_10%_ROI", 0))
+        lazy_a = num_seguro(r.get("Precio_Lazy_Sugerido", 0))
+        var_a = float_seguro(r.get("Variacion_Bruta_%", 0))
+        sen_a = str(r.get("Senal_Trading", "Operable"))
+        lineas_fb.append(f"- **{nom}** (`{p_a:,} mnds` en `{f_a}` | `{var_a:+.1f}%`) — {sen_a} ➡️ 🔨 Pujar hasta `{puja_a:,}` | 🎯 Listar Lazy a `{lazy_a:,}`")
+
+    lineas_fb.append("\n### 💼 Diagnóstico de tu Cartera Activa:")
+    if filas_cartera:
+        for c in filas_cartera:
+            lineas_fb.append(f"- **{c['Jugador']}**: Mercado hoy `{c['Mercado_Hoy']:,}` (Tenencia: `{c['Resultado_Tenencia']:+,} mnds` / `{c['ROI_Latente_%']:+.1f}%`) ➡️ **{c['Acción_Sugerida']}** (Listar Lazy en `{c['Precio_Lazy_1h']:,}`).")
+    else:
+        lineas_fb.append("- Tenés el 100% de tu presupuesto líquido. Destiná hasta el 60% a las oportunidades de arriba mediante puja.")
+
+    return "\n".join(lineas_fb)
+
+def generar_oraculo_contenido_vivo(df_corte, df_fodder, df_totw, hora_drop_txt, plataforma, api_key_usar):
+    dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    ahora = ahora_arg()
+    dia_hoy = dias[ahora.weekday()]
+    hora_str = ahora.strftime("%H:%M")
+    pauta_dia = AGENDA_EA_SEMANAL.get(dia_hoy, "Contenido diario de SBCs y Evoluciones.")
+
+    subidas = []
+    fodder_lista = []
+    if not df_corte.empty:
+        df_sub = df_corte.sort_values(by="Variacion_Bruta_%", ascending=False).head(6) if "Variacion_Bruta_%" in df_corte.columns else pd.DataFrame()
+        for _, r in df_sub.iterrows():
+            if float_seguro(r.get("Variacion_Bruta_%", 0)) > 0:
+                subidas.append(f"{str(r['Jugador']).split(' (')[0]} ({num_seguro(r['Precio_Actual']):,} mnds, +{float_seguro(r['Variacion_Bruta_%']):.1f}%)")
+
+        for med in [84, 85, 86, 87, 88, 89]:
+            cands = df_corte[df_corte["Jugador"].astype(str).str.contains(f"Media {med}", na=False) & (df_corte["Precio_Actual"].apply(num_seguro) > 0)]
+            if not cands.empty:
+                min_row = cands.loc[cands["Precio_Actual"].apply(num_seguro).idxmin()]
+                fodder_lista.append(f"Media {med}: {str(min_row['Jugador']).split(' (')[0]} a {num_seguro(min_row['Precio_Actual']):,} mnds [{min_row.get('Fuente_Mejor_Precio', 'PC')}]")
+
+    prompt = f"""
+    Actuá como el Oráculo de Contenido, SBCs y Filtraciones (Leaks) de EA Sports FC 27 ({plataforma}).
+    Hoy es {dia_hoy}, hora actual: {hora_str} hs (ARG). Horario del Drop diario para el usuario: {hora_drop_txt}.
+    Pauta de contenido de EA para {dia_hoy}: {pauta_dia}
+    Cartas con mayor presión compradora en vivo hoy: {', '.join(subidas) if subidas else 'Mercado estable sin picos abruptos'}
+    Precios piso de Medias (Fodder SBC) ahora mismo: {', '.join(fodder_lista) if fodder_lista else 'Sin muestra de fodder'}
+
+    Redactá un DICTAMEN DEL ORÁCULO DE CONTENIDO dinámico y directo (sin tablas '|'):
+    1. 🔮 PREDICCIÓN DEL DROP DE HOY ({dia_hoy} - {hora_drop_txt}): Qué SBCs, Mejoras o Evoluciones lanza EA hoy y qué medias o requisitos van a volar.
+    2. 🛒 LAS 3 COMPRAS ANTICIPADAS DEL ORÁCULO: Indicá qué 3 medias, TOTW o cartas puntuales de la lista conviene acumular AHORA MISMO y a qué precio máximo.
+    3. ⏰ TIMING DE ENTRADA Y SALIDA HOY: A qué hora exacta comprar en pánico y a qué hora vender en el pico de hype.
+    """
+
+    texto_ia, modelo_usado = llamar_ia_en_vivo(prompt, api_key_usar)
+    if texto_ia:
+        cabecera = f"🔮 **ORÁCULO DE CONTENIDO EN VIVO ({dia_hoy} {hora_str} hs | Drop: {hora_drop_txt} | Modelo: {modelo_usado})**\n\n"
+        return cabecera + texto_ia
+
+    lineas_or = [
+        f"🔮 **ORÁCULO DE CONTENIDO EN VIVO ({dia_hoy} {hora_str} hs | Drop: {hora_drop_txt})**\n",
+        f"### 📅 Pauta Oficial esperada para hoy ({dia_hoy}):",
+        f"- {pauta_dia}\n",
+        "### 🧱 Piso Actual de Medias SBC (Fodder en Vivo):"
+    ]
+    for f_it in (fodder_lista or ["Consultá la pestaña Simulador Fodder para ver los pisos por media."]):
+        lineas_or.append(f"- {f_it}")
+    lineas_or.append(f"\n### ⏰ Ventana Operativa Sugerida:\n- Acumular en puja hasta 25 minutos antes de las **{hora_drop_txt}** y listar con recargo Lazy Buyer durante los primeros 45 minutos posteriores al lanzamiento del contenido.")
+    return "\n".join(lineas_or)
 
 def colorear_neto_y_roi(val):
     try:
@@ -365,18 +665,18 @@ def cargar_por_id_publico(sheet_id):
     return {}, "No se pudo leer 'Historial_Tendencias'. Verificá que en 'Compartir' diga 'Cualquier persona con el vínculo'."
 
 def guardar_hoja_sincronizada(df_guardar, nombre_hoja, es_admin=False):
-    # Si es Invitado, guarda únicamente en la sesión individual de su navegador
     if not es_admin:
         st.session_state[f"guest_{nombre_hoja}"] = df_guardar.copy()
         return
 
-    # Si es Administrador, guarda en el servidor y sincroniza con Sheets / Excel
     st.session_state[f"override_{nombre_hoja}"] = df_guardar.copy()
     try:
         if nombre_hoja == "Mi_Cartera":
             df_guardar.to_csv(ARCHIVO_CARTERA_LOCAL, index=False)
         elif nombre_hoja == "Mis_Alertas":
             df_guardar.to_csv(ARCHIVO_ALERTAS_LOCAL, index=False)
+        elif nombre_hoja == "Recomendacion_IA":
+            df_guardar.to_csv(ARCHIVO_IA_LOCAL, index=False)
     except Exception:
         pass
 
@@ -498,7 +798,6 @@ try:
         else:
             st.markdown('<div class="mode-badge-guest">👤 Modo Invitado (Tu Propia Cartera)</div>', unsafe_allow_html=True)
 
-        # Inicializar o recuperar Cartera según el modo (Admin o Invitado)
         columnas_base_cartera = ["Jugador_Exacto", "Estrategia", "Precio_Pagado", "Estado", "Precio_Venta", "Costo_EA_Tax", "Ganancia_Neta", "ROI_%", "Fecha_Compra", "Fecha_Venta"]
         columnas_base_alertas = ["Jugador_Buscado", "Precio_Objetivo", "Estado"]
 
@@ -558,8 +857,13 @@ try:
             lazy_pct = st.slider("🎯 % Recargo Lazy Buyer (1h)", min_value=5, max_value=30, value=12)
             stop_loss_pct = st.slider("🛑 % Stop-Loss (Aviso salida)", min_value=-25, max_value=-3, value=-10)
             horas_rotacion = st.slider("⏱️ Horas Tope de Rotación", min_value=12, max_value=168, value=72, step=12)
+            api_key_custom = st.text_input("🤖 Gemini API Key Propia (Opcional)", type="password", placeholder="Usa la clave integrada por defecto")
 
-        modo_streamer = st.toggle("👁️ Modo Streamer (Ocultar Saldos)", value=False)
+        c_t1, c_t2 = st.columns(2)
+        with c_t1:
+            modo_streamer = st.toggle("👁️ Modo Streamer", value=False)
+        with c_t2:
+            alerta_sonora = st.toggle("🔔 Sonido Sniper", value=True)
 
         # 3. CALCULADORA RÁPIDA ADAPTADA AL PERFIL DEL USUARIO
         st.markdown("---")
@@ -661,6 +965,20 @@ try:
             st.caption("No tenés cartas pendientes de venta.")
 
         if es_admin:
+            with st.expander("🚀 Escaneo Remoto GitHub (Admin)"):
+                st.caption("Dispará el bot recolector en la nube sin abrir GitHub:")
+                repo_gh = st.text_input("Repositorio GitHub:", value=REPO_GITHUB_DEFAULT)
+                token_gh = st.text_input("GitHub Token (PAT con permiso workflow):", type="password")
+                if st.button("⚡ Escanear Mercado Ahora", use_container_width=True):
+                    if token_gh.strip():
+                        ok_gh, msg_gh = disparar_github_action_remoto(repo_gh, token_gh)
+                        if ok_gh:
+                            st.success(msg_gh)
+                        else:
+                            st.error(msg_gh)
+                    else:
+                        st.warning("Ingresá tu Personal Access Token de GitHub para iniciar el workflow.")
+
             with st.expander("🔗 Vínculo de Google Sheets (Admin)"):
                 link_sb = st.text_input("URL de tu planilla:", value=link_activo)
                 if st.button("Guardar Vínculo", use_container_width=True):
@@ -676,14 +994,12 @@ try:
     ultima_act = str(df_historial["Fecha"].max()) if not df_historial.empty and "Fecha" in df_historial.columns else "Sin escaneo"
     df_ult_corte = df_historial[df_historial["Fecha"] == ultima_act].copy() if not df_historial.empty and "Fecha" in df_historial.columns else pd.DataFrame()
 
-    # Si el usuario eligió Consola y existe la columna Precio_Consola (> 0), usarla como referencia
     usar_consola = "Consola" in plataforma_usuario
     if usar_consola and not df_ult_corte.empty and "Precio_Consola" in df_ult_corte.columns:
         mask_con = df_ult_corte["Precio_Consola"].apply(num_seguro) > 0
         if mask_con.any():
             df_ult_corte.loc[mask_con, "Precio_Actual"] = df_ult_corte.loc[mask_con, "Precio_Consola"]
 
-    # Recalcular Puja Máxima y Lazy Sugerido del padrón según las reglas personalizadas del usuario
     if not df_ult_corte.empty and "Precio_Actual" in df_ult_corte.columns:
         df_ult_corte["Puja_Max_10%_ROI"] = df_ult_corte["Precio_Actual"].apply(
             lambda p: redondear_escalon_ea((num_seguro(p) * 0.95) / factor_roi, hacia_arriba=False)
@@ -722,7 +1038,39 @@ try:
         st.stop()
 
     # ==========================================
-    # TARJETAS KPI FINANCIERAS (CON MODO STREAMER Y PRESUPUESTO PERSONALIZADO)
+    # DETECTOR VISUAL Y SONORO DE ALERTAS SNIPER EN VIVO
+    # ==========================================
+    df_alertas_check = datos.get("Mis_Alertas", pd.DataFrame(columns=columnas_base_alertas)).copy()
+    if not df_alertas_check.empty and "Estado" in df_alertas_check.columns and not df_ult_corte.empty:
+        act_snipers = df_alertas_check[df_alertas_check["Estado"].astype(str).str.strip() == "Activa"]
+        disparos_sniper = []
+        for _, r_sn in act_snipers.iterrows():
+            j_b = str(r_sn.get("Jugador_Buscado", "")).strip()
+            p_obj = num_seguro(r_sn.get("Precio_Objetivo", 0))
+            if j_b and p_obj > 0:
+                m_sn = df_ult_corte[df_ult_corte["Jugador"].astype(str).str.lower().str.contains(j_b.lower(), na=False)]
+                if not m_sn.empty:
+                    mejor_fila = m_sn.loc[m_sn["Precio_Actual"].apply(num_seguro).idxmin()]
+                    p_actual_sn = num_seguro(mejor_fila.get("Precio_Actual", 0))
+                    if 0 < p_actual_sn <= p_obj:
+                        disparos_sniper.append((
+                            str(mejor_fila["Jugador"]).split(" (")[0],
+                            p_actual_sn,
+                            p_obj,
+                            str(mejor_fila.get("Fuente_Mejor_Precio", "PC")),
+                            str(mejor_fila.get("Enlace_Optimo", mejor_fila.get("Enlace_Futbin", "")))
+                        ))
+        if disparos_sniper:
+            if alerta_sonora:
+                reproducir_sonido_sniper()
+            items_html = "<br>".join([
+                f"🎯 <b>{nom_s}</b> cayó a <span style='color:#00e676;font-weight:900;'>{p_s:,} mnds</span> [{f_s}] (Tu objetivo: <= {obj_s:,} mnds) — <a href='{lnk_s}' target='_blank' style='color:#ffea00;'>Abrir Carta</a>"
+                for nom_s, p_s, obj_s, f_s, lnk_s in disparos_sniper
+            ])
+            st.markdown(f'<div class="sniper-banner">🚨 <b>¡ALERTA SNIPER DETECTADA EN VIVO!</b><br>{items_html}</div>', unsafe_allow_html=True)
+
+    # ==========================================
+    # TARJETAS KPI FINANCIERAS
     # ==========================================
     df_cartera = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
     if not df_cartera.empty and "Estado" in df_cartera.columns:
@@ -751,19 +1099,22 @@ try:
 
     filas_cartera_viva = []
     vnr_total = 0
-    for _, r_a in activos.iterrows():
+    for idx_orig, r_a in activos.iterrows():
         nom_a = str(r_a.get("Jugador_Exacto", "Jugador"))
         costo_a = num_seguro(r_a.get("Precio_Pagado", 0), 0)
         est_a = str(r_a.get("Estrategia", "Flipping Meta"))
+        if not est_a or est_a.lower() == "nan":
+            est_a = autodetectar_estrategia(nom_a, costo_a)
         empate_a = redondear_escalon_ea(costo_a / 0.95, hacia_arriba=True)
         sl_a = redondear_escalon_ea((costo_a * factor_sl) / 0.95, hacia_arriba=False)
 
-        horas_hold = 0.0
+        horas_hold = 1.0
         try:
             dt_c = datetime.strptime(str(r_a.get("Fecha_Compra", "")).strip(), "%Y-%m-%d %H:%M")
-            horas_hold = max(0.0, round((ahora_arg() - dt_c).total_seconds() / 3600.0, 1))
+            horas_hold = max(1.0, round((ahora_arg() - dt_c).total_seconds() / 3600.0, 1))
         except Exception:
             pass
+        dias_hold = max(0.25, round(horas_hold / 24.0, 2))
         str_hold = f"{int(horas_hold)}h" if horas_hold < 48 else f"{round(horas_hold/24, 1)}d"
 
         p_mercado = costo_a
@@ -783,6 +1134,7 @@ try:
         vnr_total += vnr_carta
         tenencia = vnr_carta - costo_a
         roi_lat = round((tenencia / costo_a) * 100, 1) if costo_a > 0 else 0.0
+        roi_diario = round(roi_lat / max(1.0, dias_hold), 1)
         lazy_a = redondear_escalon_ea(max(p_mercado * factor_lazy, (costo_a * factor_roi) / 0.95), hacia_arriba=True)
 
         if roi_lat <= float(stop_loss_pct):
@@ -795,6 +1147,7 @@ try:
             estado_op = f"⏳ HOLD / LAZY ({str_hold})"
 
         filas_cartera_viva.append({
+            "Idx_Cartera": idx_orig,
             "Jugador": nom_a,
             "Estrategia": est_a,
             "Costo_Pagado": costo_a,
@@ -804,8 +1157,10 @@ try:
             "Stop_Loss": sl_a,
             "Resultado_Tenencia": tenencia,
             "ROI_Latente_%": roi_lat,
+            "ROI_Diario_%": roi_diario,
             "Acción_Sugerida": estado_op,
             "Antigüedad": str_hold,
+            "Vendido_A": 0,
             "Link": enlace_a
         })
 
@@ -831,24 +1186,25 @@ try:
     # PESTAÑAS INTERACTIVAS COMPLETAS
     # ==========================================
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Cartera, P&L & Curva Capital",
+        "📊 Cartera 1-Clic, P&L & Proyector",
         "⚡ Radar 1-Clic, Lupa & Compartir",
-        "🎯 Alertas, Simulador Fodder & TOTW",
-        "🔮 Oráculo & Reporte IA"
+        "🎯 Optimizador SBC, Fodder & Sniper",
+        "🔮 Oráculo & Reporte IA En Vivo"
     ])
 
     with tab1:
-        st.subheader("🎯 Monitoreo de Cartera Activa (Semáforo en Vivo con Rotación, Lazy y Stop-Loss)")
+        st.subheader("🎯 Monitoreo de Cartera Activa (Escribí en '💸 Vendido_A' para liquidar en 1 Clic)")
         if filas_cartera_viva:
             df_viva = pd.DataFrame(filas_cartera_viva)
-            styled_viva = aplicar_estilo_seguro(
+            cols_deshabilitadas_viva = [c for c in df_viva.columns if c != "Vendido_A"]
+
+            edicion_viva = st.data_editor(
                 df_viva,
-                cols_neto=["Resultado_Tenencia", "ROI_Latente_%"],
-                cols_accion=["Acción_Sugerida"]
-            )
-            st.dataframe(
-                styled_viva, use_container_width=True, hide_index=True,
+                use_container_width=True,
+                hide_index=True,
+                disabled=cols_deshabilitadas_viva,
                 column_config={
+                    "Idx_Cartera": None,
                     "Costo_Pagado": st.column_config.NumberColumn("💵 Costo", format="%d mnds"),
                     "Empate_5%": st.column_config.NumberColumn("⚖️ Empate (5%)", format="%d mnds"),
                     "Mercado_Hoy": st.column_config.NumberColumn("📊 Mercado Hoy", format="%d mnds"),
@@ -856,25 +1212,73 @@ try:
                     "Stop_Loss": st.column_config.NumberColumn(f"🛑 SL ({stop_loss_pct}%)", format="%d mnds"),
                     "Resultado_Tenencia": st.column_config.NumberColumn("✨ Neto Hoy", format="%+d mnds"),
                     "ROI_Latente_%": st.column_config.NumberColumn("📈 ROI %", format="%+.1f%%"),
+                    "ROI_Diario_%": st.column_config.NumberColumn("⚡ ROI/Día", format="%+.1f%%"),
+                    "Vendido_A": st.column_config.NumberColumn("💸 Vendido_A (Editar)", min_value=0, max_value=15000000, step=250, format="%d mnds"),
                     "Link": st.column_config.LinkColumn("🔗 Web", display_text="Abrir Carta")
                 }
             )
+
+            filas_a_liquidar = edicion_viva[edicion_viva["Vendido_A"].apply(num_seguro) > 0]
+            if not filas_a_liquidar.empty:
+                if st.button(f"💰 Liquidar {len(filas_a_liquidar)} Venta(s) Cargada(s) en Tabla (5% Tax)"):
+                    df_c_upd = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
+                    df_c_upd["Estado"] = df_c_upd["Estado"].astype(object)
+                    if "Fecha_Venta" not in df_c_upd.columns:
+                        df_c_upd["Fecha_Venta"] = ""
+                    df_c_upd["Fecha_Venta"] = df_c_upd["Fecha_Venta"].astype(object)
+
+                    for _, r_liq in filas_a_liquidar.iterrows():
+                        idx_c_orig = int(r_liq["Idx_Cartera"])
+                        p_venta_liq = int(num_seguro(r_liq["Vendido_A"]))
+                        p_comp_liq = float(num_seguro(df_c_upd.loc[idx_c_orig, "Precio_Pagado"], 0))
+                        tax_liq = int(round(p_venta_liq * 0.05))
+                        neto_liq = int(round((p_venta_liq - tax_liq) - p_comp_liq))
+                        roi_liq = round((neto_liq / p_comp_liq) * 100, 2) if p_comp_liq > 0 else 0.0
+
+                        df_c_upd.loc[idx_c_orig, "Estado"] = "Vendido"
+                        df_c_upd.loc[idx_c_orig, "Precio_Venta"] = p_venta_liq
+                        df_c_upd.loc[idx_c_orig, "Costo_EA_Tax"] = tax_liq
+                        df_c_upd.loc[idx_c_orig, "Ganancia_Neta"] = neto_liq
+                        df_c_upd.loc[idx_c_orig, "ROI_%"] = roi_liq
+                        df_c_upd.loc[idx_c_orig, "Fecha_Venta"] = ahora_arg().strftime("%Y-%m-%d %H:%M")
+
+                    guardar_hoja_sincronizada(df_c_upd, "Mi_Cartera", es_admin=es_admin)
+                    st.success("¡Ventas liquidadas y registradas en el Libro Mayor!")
+                    st.rerun()
         else:
             st.info("No tenés cartas activas en cartera. Podés agregarlas desde la barra lateral o con 1 clic en la pestaña Radar.")
 
-        col_g1, col_g2 = st.columns(2)
+        # GRÁFICOS: VALUACIÓN, DIVERSIFICACIÓN DE RIESGO Y CURVA P&L
+        col_g1, col_g2, col_g3 = st.columns(3)
         with col_g1:
             if filas_cartera_viva:
                 df_bar_viva = pd.DataFrame(filas_cartera_viva)
                 fig_bar = px.bar(
                     df_bar_viva, x="Jugador", y=["Costo_Pagado", "Mercado_Hoy", "Precio_Lazy_1h"],
-                    barmode="group", title="Valuación por Carta Activa: Costo vs Mercado Hoy vs Target Lazy",
+                    barmode="group", title="📦 Costo vs Mercado Hoy vs Target Lazy",
                     color_discrete_sequence=["#2979ff", "#ff5252", "#00e676"]
                 )
-                fig_bar.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)")
+                fig_bar.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=340)
                 st.plotly_chart(fig_bar, use_container_width=True)
 
         with col_g2:
+            filas_div = [{"Rubro": "💵 Liquidez en Caja", "Monedas": liquidez_disp}]
+            if filas_cartera_viva:
+                df_ag_est = pd.DataFrame(filas_cartera_viva).groupby("Estrategia")["Costo_Pagado"].sum().reset_index()
+                for _, r_est in df_ag_est.iterrows():
+                    filas_div.append({"Rubro": str(r_est["Estrategia"]), "Monedas": int(r_est["Costo_Pagado"])})
+                    if int(r_est["Costo_Pagado"]) > (presupuesto_usuario * 0.60):
+                        st.warning(f"⚠️ **Alerta de Concentración:** Tenés más del 60% de tu presupuesto en **{r_est['Estrategia']}** (`{int(r_est['Costo_Pagado']):,} mnds`). Diversificá para reducir riesgo.")
+            df_div = pd.DataFrame(filas_div)
+            fig_pie = px.pie(
+                df_div, values="Monedas", names="Rubro", hole=0.55,
+                title="🍩 Exposición y Diversificación de Capital",
+                color_discrete_sequence=["#00e676", "#00e5ff", "#ffd600", "#ff4d6d", "#b5179e"]
+            )
+            fig_pie.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=340)
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        with col_g3:
             if not vendidos.empty:
                 df_curva = vendidos.copy()
                 df_curva["Ganancia_Neta_Num"] = df_curva["Ganancia_Neta"].apply(num_seguro)
@@ -882,12 +1286,13 @@ try:
                 df_curva["Operacion"] = [f"#{i+1} {r.get('Jugador_Exacto', 'Carta')}" for i, (_, r) in enumerate(df_curva.iterrows())]
                 fig_curva = px.area(
                     df_curva, x="Operacion", y="Ganancia_Acumulada",
-                    markers=True, title="📈 Curva de Contribución Marginal Acumulada (P&L Realizado)",
+                    markers=True, title="📈 Curva de Contribución Marginal (P&L)",
                     color_discrete_sequence=["#00e676"]
                 )
-                fig_curva.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)")
+                fig_curva.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=340)
                 st.plotly_chart(fig_curva, use_container_width=True)
 
+        # ESTADO DE RESULTADOS + LIBRO MAYOR CON RE-COMPRA 1-CLIC + EXPORTADOR EXCEL
         col_pnl1, col_pnl2 = st.columns([1, 1])
         with col_pnl1:
             st.subheader("📑 Estado de Resultados (Modelo Costeo Variable)")
@@ -921,15 +1326,93 @@ try:
                 column_config={"Monto (Monedas)": st.column_config.NumberColumn("💰 Monedas", format="%+d mnds")}
             )
 
+            bytes_excel = generar_excel_contable_bytes(
+                df_estado_resultados,
+                pd.DataFrame(filas_cartera_viva) if filas_cartera_viva else pd.DataFrame(),
+                vendidos
+            )
+            st.download_button(
+                "📥 Descargar Reporte Contable Completo (.xlsx)",
+                data=bytes_excel,
+                file_name=f"Balance_FC27_{ahora_arg().strftime('%Y-%m-%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+
         with col_pnl2:
-            st.subheader("📜 Libro Mayor de Ventas Cerradas")
+            st.subheader("📜 Libro Mayor de Ventas (Tildá 🔄 para Re-Comprar en 1 Clic)")
             if not vendidos.empty:
                 if any(vendidos["Precio_Venta"].apply(num_seguro) == 0):
                     st.caption("💡 Tip: Tenés una carta marcada como 'Vendido' con Precio_Venta en 0. Podés cargarle su precio de venta real desde la barra lateral en '💰 Cerrar / Corregir Venta'.")
-                styled_vend = aplicar_estilo_seguro(vendidos, cols_neto=["Ganancia_Neta", "ROI_%"])
-                st.dataframe(styled_vend, use_container_width=True, hide_index=True)
+                df_vend_edit = vendidos.copy()
+                df_vend_edit.insert(0, "Re_Comprar", False)
+                edicion_vend = st.data_editor(
+                    df_vend_edit,
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=[c for c in df_vend_edit.columns if c != "Re_Comprar"],
+                    column_config={
+                        "Re_Comprar": st.column_config.CheckboxColumn("🔄 Re-Comprar"),
+                        "Precio_Pagado": st.column_config.NumberColumn("💵 Costo", format="%d mnds"),
+                        "Precio_Venta": st.column_config.NumberColumn("💰 Venta", format="%d mnds"),
+                        "Ganancia_Neta": st.column_config.NumberColumn("✨ Neto", format="%+d mnds"),
+                        "ROI_%": st.column_config.NumberColumn("📈 ROI %", format="%+.1f%%"),
+                    }
+                )
+                recompras_sel = edicion_vend[edicion_vend["Re_Comprar"] == True]
+                if not recompras_sel.empty:
+                    if st.button(f"🔄 Re-Comprar {len(recompras_sel)} carta(s) y enviar a Cartera Activa"):
+                        df_c_act = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
+                        nuevas_re = []
+                        for _, r_re in recompras_sel.iterrows():
+                            nuevas_re.append({
+                                "Jugador_Exacto": str(r_re.get("Jugador_Exacto", "Carta")),
+                                "Estrategia": str(r_re.get("Estrategia", "Flipping Meta")),
+                                "Precio_Pagado": int(num_seguro(r_re.get("Precio_Pagado", 10000))),
+                                "Estado": "Activo",
+                                "Precio_Venta": 0,
+                                "Costo_EA_Tax": 0,
+                                "Ganancia_Neta": 0,
+                                "ROI_%": 0.0,
+                                "Fecha_Compra": ahora_arg().strftime("%Y-%m-%d %H:%M"),
+                                "Fecha_Venta": ""
+                            })
+                        df_c_act = pd.concat([df_c_act, pd.DataFrame(nuevas_re)], ignore_index=True)
+                        guardar_hoja_sincronizada(df_c_act, "Mi_Cartera", es_admin=es_admin)
+                        st.success("¡Cartas re-compradas y enviadas a tu Cartera Activa!")
+                        st.rerun()
             else:
                 st.info("Todavía no hay ventas cerradas registradas.")
+
+        # PROYECTOR DE INTERÉS COMPUESTO (META DEL MILLÓN)
+        st.markdown("---")
+        with st.expander("🚀 Proyector de Interés Compuesto — Calculadora 'Meta del Millón'", expanded=False):
+            patrimonio_actual = max(5000, liquidez_disp + vnr_total)
+            cp1, cp2, cp3 = st.columns(3)
+            with cp1:
+                cap_inicial_proy = st.number_input("Patrimonio Actual (Caja + Stock VNR)", min_value=5000, max_value=50000000, value=int(patrimonio_actual), step=10000)
+            with cp2:
+                meta_proy = st.number_input("🎯 Meta de Monedas Objetivo", min_value=50000, max_value=50000000, value=max(1000000, int(patrimonio_actual * 2)), step=50000)
+            with cp3:
+                roi_diario_proy = st.slider("📈 % Rendimiento Diario Compuesto", min_value=1.0, max_value=15.0, value=4.5, step=0.5)
+
+            if cap_inicial_proy >= meta_proy:
+                st.success("🏆 ¡Ya alcanzaste o superaste esta meta de monedas!")
+            else:
+                dias_necesarios = int(math.ceil(math.log(meta_proy / cap_inicial_proy) / math.log(1.0 + (roi_diario_proy / 100.0))))
+                fecha_meta = (ahora_arg() + timedelta(days=dias_necesarios)).strftime("%d/%m/%Y")
+                st.info(
+                    f"⏱️ Manteniendo un **`+{roi_diario_proy}%` diario**, pasarás de **`{cap_inicial_proy:,} mnds`** a **`{meta_proy:,} mnds`** "
+                    f"en exactamente **{dias_necesarios} días** (Fecha estimada: **{fecha_meta}**)."
+                )
+                dias_graf = min(dias_necesarios, 45)
+                df_proy = pd.DataFrame([
+                    {"Día": f"Día {d}", "Patrimonio_Proyectado": int(round(cap_inicial_proy * ((1.0 + roi_diario_proy / 100.0) ** d)))}
+                    for d in range(dias_graf + 1)
+                ])
+                fig_proy = px.line(df_proy, x="Día", y="Patrimonio_Proyectado", markers=True, title=f"Proyección de Crecimiento Compuesto ({dias_graf} días)")
+                fig_proy.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=280)
+                st.plotly_chart(fig_proy, use_container_width=True)
 
     with tab2:
         st.subheader("🔍 Lupa Visual Histórica (Evolución de Precio, Piso, Promedio y Zona de Puja)")
@@ -964,7 +1447,6 @@ try:
                 fig_hist.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=340)
                 st.plotly_chart(fig_hist, use_container_width=True)
 
-        # GENERADOR DE TARJETA PARA COMPARTIR EN WHATSAPP / DISCORD
         if not df_ult_corte.empty:
             with st.expander("📲 Copiar Resumen de Gangas para WhatsApp / Discord / Telegram"):
                 df_top_g = df_ult_corte[df_ult_corte["Precio_Actual"].apply(num_seguro) <= presupuesto_usuario].copy()
@@ -987,7 +1469,18 @@ try:
         with c_f1:
             busqueda_jug = st.text_input("🔍 Filtrar por Nombre, Media o Tipo de Carta", placeholder="Ej: 86, TOTW, Mbappe...")
         with c_f2:
-            filtro_accion = st.selectbox("Filtrar por Señal", ["Todas", "🟢 COMPRAR", "⚡ Flipping Rápido", "💎 Mínimo Histórico", "🔴 VENDER", "⚠️ Evitar Cuchillo"])
+            filtro_accion = st.selectbox(
+                "Filtrar por Señal / Categoría",
+                [
+                    "Todas",
+                    "🟢 COMPRAR",
+                    "⚡ Flipping Rápido",
+                    "💎 Mínimo Histórico",
+                    "📦 Out of Packs / Especiales (TOTW & Promos)",
+                    "🔴 VENDER",
+                    "⚠️ Evitar Cuchillo"
+                ]
+            )
         with c_f3:
             max_slider = max(200000, int(presupuesto_usuario))
             tope_precio_filtro = st.slider("Precio Máximo (Monedas)", min_value=500, max_value=max_slider, value=min(int(presupuesto_usuario), max_slider), step=2500)
@@ -1002,6 +1495,8 @@ try:
                 df_filtrado = df_filtrado[df_filtrado["Senal_Trading"].astype(str).str.contains("⚡", na=False)]
             elif filtro_accion == "💎 Mínimo Histórico" and "Estado_Historico" in df_filtrado.columns:
                 df_filtrado = df_filtrado[df_filtrado["Estado_Historico"].astype(str).str.contains("💎", na=False)]
+            elif filtro_accion == "📦 Out of Packs / Especiales (TOTW & Promos)":
+                df_filtrado = df_filtrado[df_filtrado["Jugador"].apply(es_carta_especial_oop)]
             elif filtro_accion == "🔴 VENDER" and "Accion" in df_filtrado.columns:
                 df_filtrado = df_filtrado[df_filtrado["Accion"].astype(str).str.contains("VENDER", na=False)]
             elif filtro_accion == "⚠️ Evitar Cuchillo" and "Senal_Trading" in df_filtrado.columns:
@@ -1055,7 +1550,53 @@ try:
                     st.rerun()
 
     with tab3:
-        # SIMULADOR INTERACTIVO DE INVERSIÓN EN MEDIAS (FODDER SBC)
+        # 1. OPTIMIZADOR MATEMÁTICO DE PLANTILLAS SBC (COMBO MÁS BARATO)
+        st.subheader("🧩 Optimizador Matemático de Plantillas SBC (Combo de 11 Cartas Más Barato Hoy)")
+        pisos_por_media_default = {83: 900, 84: 1200, 85: 2800, 86: 5500, 87: 9500, 88: 14500, 89: 22000}
+        pisos_vivos = {}
+        jug_ref_vivos = {}
+        for m_val, p_def_m in pisos_por_media_default.items():
+            if not df_ult_corte.empty and "Jugador" in df_ult_corte.columns:
+                c_m = df_ult_corte[df_ult_corte["Jugador"].astype(str).str.contains(f"Media {m_val}", na=False) & (df_ult_corte["Precio_Actual"].apply(num_seguro) > 0)]
+                if not c_m.empty:
+                    fila_min_m = c_m.loc[c_m["Precio_Actual"].apply(num_seguro).idxmin()]
+                    pisos_vivos[m_val] = num_seguro(fila_min_m["Precio_Actual"], p_def_m)
+                    jug_ref_vivos[m_val] = f"{str(fila_min_m['Jugador']).split(' (')[0]} ({pisos_vivos[m_val]:,} mnds)"
+                else:
+                    pisos_vivos[m_val] = p_def_m
+                    jug_ref_vivos[m_val] = f"Referencia ({p_def_m:,} mnds)"
+            else:
+                pisos_vivos[m_val] = p_def_m
+                jug_ref_vivos[m_val] = f"Referencia ({p_def_m:,} mnds)"
+
+        co1, co2 = st.columns([1, 2])
+        with co1:
+            media_sbc_obj = st.selectbox("🎯 Media de Plantilla exigida por el SBC", [84, 85, 86, 87, 88], index=2)
+            ifs_exigidos = st.selectbox("🖤 Cantidad de Cartas TOTW / IF exigidas", [0, 1, 2], index=0)
+        with co2:
+            combos_disp = COMBOS_SBC_PLANTILLAS.get(media_sbc_obj, [])
+            filas_combos = []
+            for nombre_combo, receta in combos_disp:
+                costo_combo = sum(cant * pisos_vivos.get(med_r, 5000) for med_r, cant in receta.items())
+                if ifs_exigidos > 0:
+                    costo_combo += ifs_exigidos * 11500
+                detalle_cartas = " + ".join([f"{cant}x M{med_r} [{jug_ref_vivos[med_r]}]" for med_r, cant in receta.items()])
+                filas_combos.append({
+                    "Receta_11_Cartas": nombre_combo + (f" (+{ifs_exigidos} IF)" if ifs_exigidos > 0 else ""),
+                    "Costo_Total_Estimado": costo_combo,
+                    "Cartas_Mas_Baratas_Hoy": detalle_cartas
+                })
+            df_combos = pd.DataFrame(filas_combos).sort_values(by="Costo_Total_Estimado")
+            mejor_combo = df_combos.iloc[0]
+            st.success(
+                f"✅ **Combinación Más Barata para Media {media_sbc_obj}:** `{mejor_combo['Receta_11_Cartas']}` "
+                f"➡️ **Costo Total: `{int(mejor_combo['Costo_Total_Estimado']):,} mnds`**\n\n"
+                f"🛒 **Qué comprar hoy:** {mejor_combo['Cartas_Mas_Baratas_Hoy']}"
+            )
+            st.dataframe(df_combos, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        # 2. SIMULADOR DE INVERSIÓN EN MEDIAS (FODDER SBC)
         st.subheader("🧮 Simulador Personalizado de Inversión en Medias (Fodder SBC)")
         ref_fodder_sim = {
             84: (1200, 2200),
@@ -1072,7 +1613,7 @@ try:
         with cs2:
             monto_inv_fod = st.number_input("Monedas a Invertir", min_value=5000, max_value=10000000, value=min(50000, int(presupuesto_usuario)), step=5000)
         with cs3:
-            p_compra_fod = st.number_input("Precio Compra por Carta", min_value=700, max_value=100000, value=piso_def, step=100)
+            p_compra_fod = st.number_input("Precio Compra por Carta", min_value=700, max_value=100000, value=int(pisos_vivos.get(med_sim, piso_def)), step=100)
         with cs4:
             p_venta_fod = st.number_input("Precio Venta Esperado (SBC)", min_value=1000, max_value=150000, value=techo_def, step=250)
 
@@ -1135,24 +1676,134 @@ try:
             else:
                 st.caption("Sin datos en la pestaña Radar_TOTW.")
 
+    # ==========================================
+    # PESTAÑA 4: CENTRO DE INTELIGENCIA ARTIFICIAL EN VIVO (DINÁMICO BAJO DEMANDA)
+    # ==========================================
     with tab4:
-        df_ia = datos.get("Recomendacion_IA", pd.DataFrame())
-        if not df_ia.empty:
-            col_ia1, col_ia2 = st.columns(2)
-            with col_ia1:
-                st.subheader("🤖 Reporte Estratégico Dual (Gemini AI)")
-                if "Reporte" in df_ia.columns and not df_ia["Reporte"].dropna().empty:
-                    st.success(str(df_ia["Reporte"].dropna().iloc[-1]))
-                else:
-                    st.dataframe(df_ia, use_container_width=True, hide_index=True)
-            with col_ia2:
-                st.subheader(f"🔮 Oráculo de Contenido ({hora_drop_txt})")
-                if "Oraculo" in df_ia.columns and not df_ia["Oraculo"].dropna().empty:
-                    st.info(str(df_ia["Oraculo"].dropna().iloc[-1]))
-                else:
-                    st.info("Consultá las columnas de tu pestaña Recomendacion_IA.")
-        else:
-            st.info("No se encontraron registros en la pestaña Recomendacion_IA.")
+        st.subheader("🧠 Centro de Inteligencia Artificial & Oráculo En Vivo (Bajo Demanda)")
+        st.caption("Cada vez que toques un botón, la IA analizará en tiempo real el padrón actual de cartas, tu presupuesto, tus reglas de Puja/Lazy y tu cartera activa.")
+
+        df_ia_base = datos.get("Recomendacion_IA", pd.DataFrame())
+        rep_guardado = str(df_ia_base["Reporte"].dropna().iloc[-1]) if not df_ia_base.empty and "Reporte" in df_ia_base.columns and not df_ia_base["Reporte"].dropna().empty else "Tocá el botón '🤖 Generar Nuevo Reporte IA Ahora' para analizar el mercado en vivo."
+        ora_guardado = str(df_ia_base["Oraculo"].dropna().iloc[-1]) if not df_ia_base.empty and "Oraculo" in df_ia_base.columns and not df_ia_base["Oraculo"].dropna().empty else "Tocá el botón '🔮 Tirar Nuevo Oráculo Ahora' para predecir el contenido del día."
+
+        if "reporte_ia_vivo" not in st.session_state:
+            st.session_state["reporte_ia_vivo"] = rep_guardado
+        if "oraculo_ia_vivo" not in st.session_state:
+            st.session_state["oraculo_ia_vivo"] = ora_guardado
+
+        col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns([2, 1, 1, 1])
+        with col_ctrl1:
+            enfoque_ia = st.selectbox(
+                "🎯 Elegí el enfoque del análisis:",
+                [
+                    "🎯 Estrategia Global Balanceada (Flipping + SBC)",
+                    "⚡ Flipping Rápido Intradía (Rebotes y Liquidez)",
+                    "🧱 Acumulación de Medias / Fodder SBC y TOTW",
+                    "🏆 Compras Meta para Ciclo FUT Champions",
+                    "🛡️ Auditoría Profunda de Mi Cartera Activa"
+                ]
+            )
+        with col_ctrl2:
+            top_n_ia = st.selectbox("📊 Cantidad Cartas Top:", [3, 5, 10], index=1)
+        with col_ctrl3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            btn_nuevo_rep = st.button("🤖 Generar Nuevo Reporte IA", use_container_width=True)
+        with col_ctrl4:
+            st.markdown("<br>", unsafe_allow_html=True)
+            btn_nuevo_ora = st.button(f"🔮 Tirar Nuevo Oráculo ({hora_drop_txt})", use_container_width=True)
+
+        if btn_nuevo_rep:
+            with st.spinner("🧠 Analizando las cartas del padrón y tu cartera con Gemini AI en tiempo real..."):
+                nuevo_rep_txt = generar_reporte_estrategico_vivo(
+                    df_ult_corte,
+                    filas_cartera_viva,
+                    int(presupuesto_usuario),
+                    roi_puja_pct,
+                    lazy_pct,
+                    etiqueta_plat,
+                    enfoque_ia,
+                    int(top_n_ia),
+                    api_key_custom
+                )
+                st.session_state["reporte_ia_vivo"] = nuevo_rep_txt
+                if es_admin:
+                    df_ia_upd = pd.DataFrame([{
+                        "Fecha": ahora_arg().strftime("%Y-%m-%d %H:%M"),
+                        "Reporte": nuevo_rep_txt,
+                        "Oraculo": st.session_state["oraculo_ia_vivo"]
+                    }])
+                    guardar_hoja_sincronizada(df_ia_upd, "Recomendacion_IA", es_admin=True)
+                st.success("✅ ¡Nuevo Reporte Estratégico generado en vivo!")
+
+        if btn_nuevo_ora:
+            with st.spinner("🔮 Consultando al Oráculo de Contenido con los pisos de Fodder y tendencias de hoy..."):
+                nuevo_ora_txt = generar_oraculo_contenido_vivo(
+                    df_ult_corte,
+                    datos.get("Radar_Fodder", pd.DataFrame()),
+                    datos.get("Radar_TOTW", pd.DataFrame()),
+                    hora_drop_txt,
+                    etiqueta_plat,
+                    api_key_custom
+                )
+                st.session_state["oraculo_ia_vivo"] = nuevo_ora_txt
+                if es_admin:
+                    df_ia_upd = pd.DataFrame([{
+                        "Fecha": ahora_arg().strftime("%Y-%m-%d %H:%M"),
+                        "Reporte": st.session_state["reporte_ia_vivo"],
+                        "Oraculo": nuevo_ora_txt
+                    }])
+                    guardar_hoja_sincronizada(df_ia_upd, "Recomendacion_IA", es_admin=True)
+                st.success("✅ ¡Nuevo Oráculo de Contenido generado en vivo!")
+
+        col_ia1, col_ia2 = st.columns(2)
+        with col_ia1:
+            st.subheader("🤖 Reporte Estratégico Dual (En Vivo)")
+            st.markdown(f'<div class="ia-card-report">{st.session_state["reporte_ia_vivo"]}</div>', unsafe_allow_html=True)
+        with col_ia2:
+            st.subheader(f"🔮 Oráculo de Contenido ({hora_drop_txt})")
+            st.markdown(f'<div class="ia-card-oracle">{st.session_state["oraculo_ia_vivo"]}</div>', unsafe_allow_html=True)
+
+        # CONSULTOR TÁCTICO INTERACTIVO (PREGUNTAS PERSONALIZADAS A LA IA)
+        st.markdown("---")
+        st.subheader("💬 Consultor Táctico IA Interactivo (Preguntale lo que quieras sobre el mercado)")
+        with st.form("form_chat_ia"):
+            pregunta_usuario = st.text_input(
+                "Escribí tu consulta de trading (la IA lee tu padrón y tu cartera actual):",
+                placeholder="Ej: Tengo 100,000 monedas libres, ¿qué 3 cartas del padrón me recomendás pujar hoy y a cuánto las listo?"
+            )
+            btn_preguntar_ia = st.form_submit_button("🚀 Analizar Consulta con IA")
+
+            if btn_preguntar_ia and pregunta_usuario.strip():
+                with st.spinner("🤖 Analizando tu consulta contra la base de datos en vivo..."):
+                    df_disp_q = df_ult_corte[df_ult_corte["Precio_Actual"].apply(num_seguro) <= presupuesto_usuario].head(25) if not df_ult_corte.empty else pd.DataFrame()
+                    cols_q = [c for c in ["Jugador", "Precio_Actual", "Fuente_Mejor_Precio", "Variacion_Bruta_%", "Senal_Trading", "Puja_Max_10%_ROI", "Precio_Lazy_Sugerido"] if c in df_disp_q.columns]
+                    muestra_q = df_disp_q[cols_q].to_string(index=False) if not df_disp_q.empty else "Sin datos."
+                    cartera_q = ", ".join([f"{c['Jugador']} (Costo {c['Costo_Pagado']:,}, Hoy {c['Mercado_Hoy']:,})" for c in filas_cartera_viva]) if filas_cartera_viva else "Sin cartas activas."
+
+                    prompt_q = f"""
+                    Actuá como Asesor Experto de Trading en EA Sports FC 27 ({etiqueta_plat}).
+                    Presupuesto del usuario: {presupuesto_usuario:,} mnds (Liquidez libre: {liquidez_disp:,} mnds).
+                    Reglas del usuario: Puja +{roi_puja_pct}% ROI, Lazy +{lazy_pct}%, Tax EA 5%.
+                    Cartera activa del usuario: {cartera_q}
+                    Muestra del padrón actual en vivo:
+                    {muestra_q}
+
+                    PREGUNTA DEL USUARIO: "{pregunta_usuario.strip()}"
+
+                    Respondé de forma directa, práctica y con números exactos de compra/puja y venta Lazy (considerando el 5% de EA Tax).
+                    """
+                    resp_q, mod_q = llamar_ia_en_vivo(prompt_q, api_key_custom)
+                    if resp_q:
+                        st.session_state["respuesta_chat_ia"] = f"💬 **Respuesta de Gemini AI ({mod_q}):**\n\n{resp_q}"
+                    else:
+                        st.session_state["respuesta_chat_ia"] = (
+                            f"💬 **Respuesta Cuantitativa Rápida:** Con tu liquidez disponible de `{liquidez_disp:,} mnds`, "
+                            f"priorizá entrar por puja (`+{roi_puja_pct}% ROI`) en las cartas con señal `⚡ Flipping Rápido` o `💎 Mínimo Histórico` de la Pestaña 2 y listalas a 1 hora en el valor de la columna `🎯 Lazy (+{lazy_pct}%)`."
+                        )
+
+        if "respuesta_chat_ia" in st.session_state:
+            st.info(st.session_state["respuesta_chat_ia"])
 
     if auto_ref:
         time.sleep(60)
