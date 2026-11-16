@@ -11,12 +11,12 @@ import gspread
 from datetime import datetime, timedelta, timezone
 from DrissionPage import ChromiumOptions, ChromiumPage
 import openpyxl
-from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from openpyxl.styles import Alignment, Font, PatternFill
 import pandas as pd
 from google import genai
 
 # ==========================================
-# CONFIGURACIÓN GENERAL Y CREDENCIALES (PROTEGIDAS CONTRA ESCÁNER GITHUB)
+# CONFIGURACIÓN GENERAL Y CREDENCIALES (MASIVO 5000 + 15M)
 # ==========================================
 _G_PART1 = "AQ.Ab8RN6KGQFnimiJeqwsb"
 _G_PART2 = "KKcbIWeCUq6SggjfhQ6kIN9aKIFafA"
@@ -27,9 +27,10 @@ _T_PART2 = "LRKvqSFvbsyZtdYuM3PPw"
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", _T_PART1 + _T_PART2)
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "7676084666")
 
-PRESUPUESTO_MAXIMO = 200000
-MAX_JUGADORES = 2000          # Padrón ampliado a 2000 jugadores en Futbin PC
-PAGINAS_FUTGG = 45            # 45 páginas en FUT.GG PC (~1350-1500 cartas)
+PRESUPUESTO_MAXIMO = 15000000  # Tope ampliado a 15 Millones de monedas
+MAX_JUGADORES = 5000           # 5000 jugadores en Futbin + 5000 en FUT.GG
+PAGINAS_FUTBIN = 180           # 180 páginas en Futbin (~5400 cartas)
+PAGINAS_FUTGG = 175            # 175 páginas en FUT.GG (~5250 cartas)
 INTERVALO_VIGILANTE_MIN = 15
 archivo_excel = "Lista_Jugadores_FC27.xlsx"
 ARCHIVO_CRED = "credenciales_google.json"
@@ -73,7 +74,7 @@ def obtener_cliente_gsheets():
             print(f"⚠️ Aviso leyendo {ARCHIVO_CRED}: {e}")
     return None
 
-def subir_dataframe_gsheets(sh, nombre_hoja, df_subir, max_filas=5000):
+def subir_dataframe_gsheets(sh, nombre_hoja, df_subir, max_filas=12000):
     try:
         df_limpio = df_subir.tail(max_filas).fillna("") if len(df_subir) > max_filas else df_subir.fillna("")
         try:
@@ -101,7 +102,7 @@ def sincronizar_todo_a_google_sheets(
     try:
         print(f"\n☁️ Subiendo base de datos actualizada a Google Sheets ('{NOMBRE_SHEET}')...")
         sh = gc.open(NOMBRE_SHEET)
-        subir_dataframe_gsheets(sh, "Historial_Tendencias", df_final, max_filas=6000)
+        subir_dataframe_gsheets(sh, "Historial_Tendencias", df_final, max_filas=12000)
         df_ia_nube = pd.DataFrame({"Fecha": [fecha_actual], "Reporte": [texto_limpio], "Oraculo": [oraculo_txt]})
         subir_dataframe_gsheets(sh, "Recomendacion_IA", df_ia_nube, max_filas=100)
         subir_dataframe_gsheets(sh, "Mi_Cartera", df_cartera, max_filas=1000)
@@ -111,7 +112,7 @@ def sincronizar_todo_a_google_sheets(
         if not df_fodder.empty:
             subir_dataframe_gsheets(sh, "Radar_Fodder", df_fodder, max_filas=200)
         if not df_arbitraje.empty:
-            subir_dataframe_gsheets(sh, "Arbitraje_FUTGG", df_arbitraje, max_filas=500)
+            subir_dataframe_gsheets(sh, "Arbitraje_FUTGG", df_arbitraje, max_filas=1000)
         if not df_evos.empty:
             subir_dataframe_gsheets(sh, "Radar_Evos", df_evos, max_filas=500)
         if not df_totw.empty:
@@ -198,7 +199,7 @@ def clave_cruce(nombre_completo):
     return f"{apellido}_{media}"
 
 # ==========================================
-# MATEMÁTICA FINANCIERA EA TAX, LAZY & STOP-LOSS
+# MATEMÁTICA FINANCIERA EA TAX, LAZY & STOP-LOSS (SOPORTE 15M)
 # ==========================================
 def redondear_escalon_ea(precio, hacia_arriba=False):
     if precio <= 0:
@@ -270,7 +271,7 @@ def extraer_precio_robusto(texto_precio, texto_fila, presupuesto_max):
             if 200 <= val <= presupuesto_max:
                 return val
 
-        enteros = re.findall(r'\b(\d{3,6})\b', fuente)
+        enteros = re.findall(r'\b(\d{3,8})\b', fuente)
         for ent in enteros:
             val = int(ent)
             if 200 <= val <= presupuesto_max and (val % 50 == 0):
@@ -278,7 +279,7 @@ def extraer_precio_robusto(texto_precio, texto_fila, presupuesto_max):
     return 0
 
 def extraer_precio_carta_unica_gg(texto_card, presupuesto_max):
-    """Extrae el precio únicamente dentro de la caja individual de cada carta en FUT.GG."""
+    """Extrae el precio únicamente dentro de la caja individual de cada carta en FUT.GG (Soporta hasta 15M)."""
     if not texto_card:
         return 0
     precios_km = re.findall(r'(\d+(?:\.\d+)?)\s*([KkMm])\b', texto_card)
@@ -286,7 +287,7 @@ def extraer_precio_carta_unica_gg(texto_card, presupuesto_max):
         mult = 1000000 if unidad.upper() == 'M' else 1000
         val = int(round(float(num_s) * mult))
         if val > presupuesto_max:
-            return 0  # Descarta inmediatamente cartas de más de 200k (ej: Mbappé, R9)
+            return 0
         if 200 <= val <= presupuesto_max:
             return val
 
@@ -298,7 +299,7 @@ def extraer_precio_carta_unica_gg(texto_card, presupuesto_max):
         if 200 <= val <= presupuesto_max:
             return val
 
-    enteros = re.findall(r'\b(\d{3,6})\b', texto_card)
+    enteros = re.findall(r'\b(\d{3,8})\b', texto_card)
     for ent in enteros:
         val = int(ent)
         if 200 <= val <= presupuesto_max and (val % 50 == 0):
@@ -362,7 +363,7 @@ def obtener_radar_ciclo_futchampions(datos_jugadores):
     hora = ahora.hour
 
     pautas_wl = {
-        0: ("🟢 FASE ACUMULACIÓN POST-WL (LUNES)", "Sell-off terminado. Comprar cartas Meta de 20k-150k en piso; suben miércoles/jueves."),
+        0: ("🟢 FASE ACUMULACIÓN POST-WL (LUNES)", "Sell-off terminado. Comprar cartas Meta en piso; suben miércoles/jueves."),
         1: ("🟡 FASE TRANSICIÓN / UCL (MARTES)", "Mercado calmo en Meta. Priorizar Flipping por puja, Lazy Listing y Fodder antes de las 15 hs."),
         2: ("📈 FASE PRE-RIVALS (MIÉRCOLES)", "Empieza la demanda de equipos para el finde. Mantener (Hold) cartas Meta compradas el lunes."),
         3: ("🔥 PICO DE LIQUIDEZ RIVALS (JUEVES)", "Inyección de monedas en PC. Excelente ventana para vender Meta y hacer Lazy Listing agresivo."),
@@ -396,7 +397,7 @@ def obtener_radar_ciclo_futchampions(datos_jugadores):
         f"🏆 *CICLO SEMANAL FUT CHAMPIONS ({dia_nombre} {hora:02d}:00 hs)*\n━━━━━━━━━━━━━━━━━━\n"
         f"🧭 Fase: *{titulo_fase}*\n"
         f"💡 Estrategia: _{consejo_wl}_\n"
-        f"🎯 *Top Objetivos Meta en Descuento (18k-200k):*\n{txt_meta}\n"
+        f"🎯 *Top Objetivos Meta en Descuento:*\n{txt_meta}\n"
     )
 
 def detectar_links_domino(datos_unificados, df_evos):
@@ -504,7 +505,7 @@ def armar_resumen_flipping_gangas(datos_finales):
     return txt
 
 # ==========================================
-# FUSIÓN DE BASES: FUTBIN + FUT.GG
+# FUSIÓN DE BASES: FUTBIN (5000) + FUT.GG (5000)
 # ==========================================
 def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_historicas, fecha_actual):
     mapa_gg_clave = {}
@@ -684,7 +685,7 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
             "Enlace_Optimo": enlace_gg
         })
 
-    print(f"🔗 Base Dual Unificada: {len(datos_unificados)} cartas totales ({len(jugadores_fb)} base FB + {exclusivos_gg} exclusivas de FUT.GG).")
+    print(f"🔗 Base Dual Masiva Unificada: {len(datos_unificados)} cartas totales ({len(jugadores_fb)} base FB + {exclusivos_gg} exclusivas de FUT.GG).")
     return datos_unificados
 
 # ==========================================
@@ -778,7 +779,7 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
 
     prom_dias_stock = round((suma_horas_activas / len(activos)) / 24.0, 1) if not activos.empty else 0.0
     resultado_tenencia_no_realizado = vnr_total_activo - capital_inmovilizado
-    liquidez_disponible = max(0, PRESUPUESTO_MAXIMO - capital_inmovilizado)
+    liquidez_disponible = max(0, 200000 - capital_inmovilizado)
 
     todas_est = sorted(list(set(estrategias_base + [str(x) for x in df_c["Estrategia"].unique() if str(x).strip()])))
     for est in todas_est:
@@ -819,11 +820,11 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
         {"Rubro_Contable": "(=) Ingreso Neto de Realización", "Monto_Monedas": ingreso_neto_tot, "Incidencia_%": 95.0 if ventas_brutas_tot > 0 else 0.0},
         {"Rubro_Contable": "(-) Costo de Adquisición de Cartas Vendidas (CMV)", "Monto_Monedas": -costo_adq_tot, "Incidencia_%": round((-costo_adq_tot / ventas_brutas_tot * 100), 1) if ventas_brutas_tot > 0 else 0.0},
         {"Rubro_Contable": "(=) CONTRIBUCIÓN MARGINAL NETA (GANANCIA REALIZADA)", "Monto_Monedas": contrib_marginal_tot, "Incidencia_%": round(margen_sobre_ventas, 1)},
-        {"Rubro_Contable": "📊 Inventario Activo (Costo Histórico)", "Monto_Monedas": capital_inmovilizado, "Incidencia_%": round((capital_inmovilizado / PRESUPUESTO_MAXIMO * 100), 1)},
+        {"Rubro_Contable": "📊 Inventario Activo (Costo Histórico)", "Monto_Monedas": capital_inmovilizado, "Incidencia_%": 0.0},
         {"Rubro_Contable": "📈 Inventario Activo a VNR Dual FB+GG (Neto 5% Tax)", "Monto_Monedas": vnr_total_activo, "Incidencia_%": 0.0},
         {"Rubro_Contable": "⚖️ Resultado por Tenencia (No Realizado)", "Monto_Monedas": resultado_tenencia_no_realizado, "Incidencia_%": 0.0},
         {"Rubro_Contable": "⏱️ Antigüedad Promedio del Stock Activo (Días)", "Monto_Monedas": prom_dias_stock, "Incidencia_%": float(cartas_estancadas)},
-        {"Rubro_Contable": "💵 Liquidez Disponible (Caja Operativa)", "Monto_Monedas": liquidez_disponible, "Incidencia_%": round((liquidez_disponible / PRESUPUESTO_MAXIMO * 100), 1)}
+        {"Rubro_Contable": "💵 Liquidez Disponible (Caja Operativa)", "Monto_Monedas": liquidez_disponible, "Incidencia_%": 0.0}
     ])
 
     txt_est_tg = ""
@@ -847,8 +848,7 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
         f"📦 *ROTACIÓN DE CAPITAL & STOCK A VNR:*\n"
         f"• Capital Inmovilizado: `{capital_inmovilizado:,} mnds` ({len(activos)} cartas)\n"
         f"• Valor Neto Realización (VNR): `{vnr_total_activo:,} mnds` (Tenencia: `{resultado_tenencia_no_realizado:+,}`)\n"
-        f"• Antigüedad Promedio Stock: `{prom_dias_stock} días` (`{cartas_estancadas}` estancadas >72h | `{cartas_stoploss}` en Stop-Loss)\n"
-        f"• Liquidez Disponible (Caja): `{liquidez_disponible:,} mnds`\n\n"
+        f"• Antigüedad Promedio Stock: `{prom_dias_stock} días` (`{cartas_estancadas}` estancadas >72h | `{cartas_stoploss}` en Stop-Loss)\n\n"
         f"🏷️ *RENTABILIDAD POR UNIDAD DE NEGOCIO:*\n"
         f"{txt_est_tg}"
     )
@@ -927,7 +927,7 @@ def escanear_oraculo_contenido(page, datos_finales, ocultar=False):
     contexto_dia = agenda_ea.get(dia_hoy, "Contenido diario de SBCs y Evoluciones a las 15:00 hs ARG.")
 
     prompt_oraculo = f"""
-    Actuá como el Oráculo de Contenido y Filtraciones (Leaks) de EA Sports FC 27 para el MERCADO DE PC (Base Unificada Futbin + FUT.GG de {len(datos_finales)} jugadores).
+    Actuá como el Oráculo de Contenido y Filtraciones (Leaks) de EA Sports FC 27 para el MERCADO DE PC (Base Masiva Unificada Futbin + FUT.GG de {len(datos_finales)} jugadores).
     Hoy es {dia_hoy}, hora actual en Argentina: {hora_str} hs (El contenido de EA sale a las 15:00 hs ARG).
     Pauta histórica del día ({dia_hoy}): {contexto_dia}
     Cartas más buscadas hoy (Hype/Leaks de Evoluciones): {', '.join(tendencias_web) if tendencias_web else 'Flujo estándar'}
@@ -1147,7 +1147,7 @@ def analizar_jugador_individual(nombre_buscado, df_viejo, df_arb_viejo):
     df_jug = df_viejo[mask]
 
     if df_jug.empty:
-        return f"⚠️ No encontré a `{nombre_buscado}` en el padrón dual de {MAX_JUGADORES} cartas."
+        return f"⚠️ No encontré a `{nombre_buscado}` en el padrón dual."
 
     ult_registro = df_jug.iloc[-1]
     enlace_principal = ult_registro['Enlace_Futbin']
@@ -1212,7 +1212,7 @@ def analizar_jugador_individual(nombre_buscado, df_viejo, df_arb_viejo):
     return reporte_lupa
 
 # ==========================================
-# NAVEGADOR Y ESCÁNER AISLADO POR CARTA (ANTI-BUG 36000)
+# NAVEGADOR Y ESCÁNER MASIVO 5000 POR PORTAL
 # ==========================================
 def crear_navegador_optimizado(ocultar=False):
     options = ChromiumOptions()
@@ -1234,8 +1234,8 @@ def crear_navegador_optimizado(ocultar=False):
     page.set.timeouts(page_load=10)
     return page
 
-def escanear_futgg(page, presupuesto_max, max_paginas=45):
-    print(f"\n⚡ Iniciando escaneo aislado por carta en FUT.GG PC ({max_paginas} páginas <= {presupuesto_max//1000}k)...")
+def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
+    print(f"\n⚡ Iniciando escaneo masivo de hasta {MAX_JUGADORES} cartas en FUT.GG PC ({max_paginas} páginas <= {presupuesto_max:,} mnds)...")
     jugadores_gg = []
     vistos_gg = set()
 
@@ -1251,7 +1251,6 @@ def escanear_futgg(page, presupuesto_max, max_paginas=45):
     except Exception:
         pass
 
-    # Sube únicamente hasta la tarjeta individual de cada jugador (jamás toma la grilla de los 30 jugadores)
     script_gg = """
     window.scrollTo(0, document.body.scrollHeight / 2);
     function contarLinksJugador(el) {
@@ -1288,11 +1287,11 @@ def escanear_futgg(page, presupuesto_max, max_paginas=45):
         if len(jugadores_gg) >= MAX_JUGADORES:
             break
         url_gg = f"https://www.fut.gg/players/?page={pag}&price__gte=200&price__lte={presupuesto_max}"
-        print(f"🌐 FUT.GG PC Página {pag}/{max_paginas}... (Capturados GG: {len(jugadores_gg)})")
+        print(f"🌐 FUT.GG PC Página {pag}/{max_paginas}... (Capturados GG: {len(jugadores_gg)}/{MAX_JUGADORES})")
         try:
             page.get(url_gg)
             page.ele('xpath://a[contains(@href, "/players/")]', timeout=4)
-            page.wait(random.uniform(0.75, 1.05))
+            page.wait(random.uniform(0.35, 0.55))
             page.stop_loading()
             datos_gg = page.run_js(script_gg)
         except Exception:
@@ -1300,6 +1299,8 @@ def escanear_futgg(page, presupuesto_max, max_paginas=45):
 
         nuevos_en_pagina = 0
         for item in (datos_gg or []):
+            if len(jugadores_gg) >= MAX_JUGADORES:
+                break
             href = item.get('href', '')
             href_limpio = href.split('?')[0]
             if not href_limpio or href_limpio in vistos_gg:
@@ -1335,7 +1336,7 @@ def escanear_futgg(page, presupuesto_max, max_paginas=45):
 
         if nuevos_en_pagina == 0:
             paginas_vacias_seguidas += 1
-            if paginas_vacias_seguidas >= 3:
+            if paginas_vacias_seguidas >= 4:
                 break
         else:
             paginas_vacias_seguidas = 0
@@ -1730,7 +1731,7 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
         fecha_actual = ultima_fecha
         datos_finales = datos_previos
     else:
-        print(f"\n🌐 Abriendo navegador para Escaneo Dual de 2000 Jugadores (Futbin PC/Consola + FUT.GG PC)...")
+        print(f"\n🌐 Abriendo navegador para Escaneo Masivo de 5000 Jugadores por portal (Tope: {PRESUPUESTO_MAXIMO:,} mnds)...")
         page_activa = crear_navegador_optimizado(ocultar=ocultar_navegador)
 
         try:
@@ -1781,11 +1782,11 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
         """
 
         paginas_fb_vacias = 0
-        for num_pag in range(1, 85):
+        for num_pag in range(1, PAGINAS_FUTBIN + 1):
             if len(jugadores_tendencia) >= MAX_JUGADORES:
                 break
             url = f"https://www.futbin.com/27/players?page={num_pag}&pc_price=200-{PRESUPUESTO_MAXIMO}"
-            print(f"⚡ Futbin PC Pág {num_pag}... (Capturados FB: {len(jugadores_tendencia)}/{MAX_JUGADORES})")
+            print(f"⚡ Futbin PC Pág {num_pag}/{PAGINAS_FUTBIN}... (Capturados FB: {len(jugadores_tendencia)}/{MAX_JUGADORES})")
             try:
                 page_activa.get(url)
             except Exception:
@@ -1797,7 +1798,7 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                         print("⏩ Futbin bloqueado por Cloudflare en este servidor. Saltando directo a FUT.GG...")
                         break
                     continue
-                page_activa.wait(random.uniform(0.50, 0.80))
+                page_activa.wait(random.uniform(0.35, 0.55))
                 page_activa.stop_loading()
                 datos_pagina = page_activa.run_js(script_js)
             except Exception:
@@ -1853,12 +1854,11 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
 
             if len(jugadores_tendencia) == antes_pag:
                 paginas_fb_vacias += 1
-                if paginas_fb_vacias >= 3:
+                if paginas_fb_vacias >= 4:
                     break
             else:
                 paginas_fb_vacias = 0
 
-        # Si Cloudflare bloqueó Futbin en la nube, rescatar los precios de Futbin del último corte válido
         if not jugadores_tendencia and df_viejo is not None and not df_viejo.empty:
             print("🛡️ Recuperando respaldo de cartas Futbin para mantener la Base Dual completa...")
             ult_f_fb = df_viejo['Fecha'].max()
@@ -1902,7 +1902,7 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
     domino_txt, df_domino = detectar_links_domino(datos_finales, df_evos)
 
     dashboard_tecnico = (
-        f"🖥️ *DASHBOARD DUAL FC27 (FUTBIN + FUT.GG)*\n"
+        f"🖥️ *DASHBOARD MASIVO FC27 (5000 FB + 5000 GG)*\n"
         f"🕒 `{fecha_actual}` | 📦 *Padrón:* `{len(datos_finales)} cartas`\n\n"
         f"{termometro_txt}{ciclo_wl_txt}{alertas_cartera_txt}{domino_txt}{fodder_txt}{totw_txt}{evos_txt}{arbitraje_txt}"
     )
@@ -1922,8 +1922,8 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
     dia_hoy = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][ahora_arg().weekday()]
 
     prompt_estrategico = f"""
-    Actuá como Trader Profesional de FC 27 operando con BASE DUAL UNIFICADA ({len(datos_finales)} cartas).
-    Hoy es {dia_hoy}. Presupuesto: {PRESUPUESTO_MAXIMO:,} mnds (Tax: 5%).
+    Actuá como Trader Profesional de FC 27 operando con BASE DUAL MASIVA ({len(datos_finales)} cartas).
+    Hoy es {dia_hoy}. Tax: 5%.
     Datos:
     {resumen_csv}
     Redactá sin tablas '|':
@@ -1933,14 +1933,14 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
     """
 
     reporte_estrategico_ia, _ = llamar_gemini_turbo(prompt_estrategico)
-    texto_limpio = f"🤖 *REPORTE ESTRATÉGICO DUAL FB+GG ({dia_hoy})*\n━━━━━━━━━━━━━━━━━━\n{reporte_estrategico_ia.replace('**', '*')}" if reporte_estrategico_ia else "🟢 Escaneo completado."
+    texto_limpio = f"🤖 *REPORTE ESTRATÉGICO DUAL FB+GG ({dia_hoy})*\n━━━━━━━━━━━━━━━━━━\n{reporte_estrategico_ia.replace('**', '*')}" if reporte_estrategico_ia else "🟢 Escaneo masivo completado."
     enviar_alerta_telegram(texto_limpio)
 
     if modo_elegido not in ["2", "5"] and df_viejo is not None and not df_viejo.empty:
         for col in df_nuevo.columns:
             if col not in df_viejo.columns:
                 df_viejo[col] = ""
-        df_final = pd.concat([df_viejo[df_nuevo.columns], df_nuevo], ignore_index=True).tail(8000)
+        df_final = pd.concat([df_viejo[df_nuevo.columns], df_nuevo], ignore_index=True).tail(15000)
     else:
         df_final = df_nuevo
 
@@ -1973,7 +1973,7 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
         df_cartera, df_alertas, df_pnl_excel, df_fodder,
         df_arbitraje, df_evos, df_totw, df_domino
     )
-    print(f"🏁 ¡Proceso completado en {round(time.time() - inicio_tiempo, 1)} segundos!")
+    print(f"🏁 ¡Proceso Masivo 5000 completado en {round(time.time() - inicio_tiempo, 1)} segundos!")
 
 # ==========================================
 # EJECUCIÓN PRINCIPAL (COMPATIBLE CON GITHUB ACTIONS Y PC)
