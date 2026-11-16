@@ -1507,7 +1507,7 @@ try:
                 "Variacion_Bruta_%", "Senal_Trading", "Puja_Max_10%_ROI", "Break_Even_5%", "Precio_Lazy_Sugerido", "Enlace_Optimo"
             ] if c in df_filtrado.columns]
 
-            df_editor_padron = df_filtrado[cols_mostrar].head(200).copy()
+            df_editor_padron = df_filtrado[cols_mostrar].head(5000).copy()
             df_editor_padron.insert(0, "Comprar_1Clic", False)
 
             edicion_padron = st.data_editor(
