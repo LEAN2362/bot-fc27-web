@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import os
 import io
 import re
+import json
 import math
 import time
 import requests
@@ -41,11 +42,13 @@ MODELOS_PREFERIDOS_IA = [
 ]
 
 PRESUPUESTO_DEFAULT = 200000
+TOPE_RADAR_MAXIMO = 15000000
 ARCHIVO_EXCEL = "Lista_Jugadores_FC27.xlsx"
 ARCHIVO_LINK_CACHE = "sheet_link_cache.txt"
 ARCHIVO_CARTERA_LOCAL = "cartera_cloud_sync.csv"
 ARCHIVO_ALERTAS_LOCAL = "alertas_cloud_sync.csv"
 ARCHIVO_IA_LOCAL = "ia_cloud_sync.csv"
+ARCHIVO_SALDOS_LOCAL = "saldos_cloud_sync.json"
 ARCHIVO_CRED = "credenciales_google.json"
 NOMBRE_SHEET = "Base_Datos_FC27"
 
@@ -187,7 +190,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# FUNCIONES MATEMÁTICAS, HORA, SONIDO Y EXCEL
+# FUNCIONES MATEMÁTICAS, HORA, SONIDO, SALDOS Y EXCEL
 # ==========================================
 PAISES_DROP = {
     "🇦🇷 Argentina / Chile / Uruguay (15:00 hs)": (-3, 15),
@@ -260,6 +263,38 @@ def reproducir_sonido_sniper():
         """,
         height=0,
     )
+
+def cargar_saldos_personalizados(es_admin, presupuesto_base, cap_auto_cartera):
+    defecto = {
+        "modo_liquidez": "Automático",
+        "liquidez_manual": max(0, int(presupuesto_base) - int(cap_auto_cartera)),
+        "modo_capital": "Automático (Suma de mis cartas)",
+        "capital_manual": int(cap_auto_cartera)
+    }
+    if not es_admin:
+        return st.session_state.get("guest_saldos", defecto)
+    if "admin_saldos" in st.session_state:
+        return st.session_state["admin_saldos"]
+    if os.path.exists(ARCHIVO_SALDOS_LOCAL):
+        try:
+            with open(ARCHIVO_SALDOS_LOCAL, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                st.session_state["admin_saldos"] = data
+                return data
+        except Exception:
+            pass
+    return defecto
+
+def guardar_saldos_personalizados(nuevos_saldos, es_admin):
+    if not es_admin:
+        st.session_state["guest_saldos"] = nuevos_saldos
+        return
+    st.session_state["admin_saldos"] = nuevos_saldos
+    try:
+        with open(ARCHIVO_SALDOS_LOCAL, "w", encoding="utf-8") as f:
+            json.dump(nuevos_saldos, f)
+    except Exception:
+        pass
 
 def generar_excel_contable_bytes(df_er, df_viva, df_vendidos):
     output = io.BytesIO()
@@ -807,7 +842,7 @@ try:
             elif os.path.exists(ARCHIVO_CARTERA_LOCAL):
                 try:
                     df_c_loc = convertir_columnas_numericas(pd.read_csv(ARCHIVO_CARTERA_LOCAL))
-                    if len(df_c_loc) >= len(datos.get("Mi_Cartera", pd.DataFrame())):
+                    if not df_c_loc.empty or "override_Mi_Cartera" in st.session_state:
                         datos["Mi_Cartera"] = df_c_loc
                 except Exception:
                     pass
@@ -914,6 +949,10 @@ try:
                 }])
                 df_c_act = pd.concat([df_c_act, nueva_fila], ignore_index=True)
                 guardar_hoja_sincronizada(df_c_act, "Mi_Cartera", es_admin=es_admin)
+                saldos_tmp = cargar_saldos_personalizados(es_admin, presupuesto_usuario, 0)
+                if saldos_tmp.get("modo_liquidez") == "Manual":
+                    saldos_tmp["liquidez_manual"] = max(0, int(saldos_tmp.get("liquidez_manual", 0)) - int(precio_c))
+                    guardar_saldos_personalizados(saldos_tmp, es_admin)
                 st.success(f"¡{jug_c.title()} agregado a Cartera!")
                 st.rerun()
 
@@ -959,6 +998,10 @@ try:
                     df_cartera_sb.loc[idx_real, "Fecha_Venta"] = ahora_arg().strftime("%Y-%m-%d %H:%M")
 
                     guardar_hoja_sincronizada(df_cartera_sb, "Mi_Cartera", es_admin=es_admin)
+                    saldos_tmp = cargar_saldos_personalizados(es_admin, presupuesto_usuario, 0)
+                    if saldos_tmp.get("modo_liquidez") == "Manual":
+                        saldos_tmp["liquidez_manual"] = max(0, int(saldos_tmp.get("liquidez_manual", 0)) + int(precio_v - tax))
+                        guardar_saldos_personalizados(saldos_tmp, es_admin)
                     st.success(f"¡Venta registrada! Neto: {neto:+,} mnds")
                     st.rerun()
         else:
@@ -1070,7 +1113,7 @@ try:
             st.markdown(f'<div class="sniper-banner">🚨 <b>¡ALERTA SNIPER DETECTADA EN VIVO!</b><br>{items_html}</div>', unsafe_allow_html=True)
 
     # ==========================================
-    # TARJETAS KPI FINANCIERAS
+    # TARJETAS KPI FINANCIERAS + EDITOR EN PÁGINA DE LIQUIDEZ Y CAPITAL INMOVILIZADO
     # ==========================================
     df_cartera = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
     if not df_cartera.empty and "Estado" in df_cartera.columns:
@@ -1091,8 +1134,20 @@ try:
         activos = pd.DataFrame()
         vendidos = pd.DataFrame()
 
-    cap_inmovilizado = int(activos["Precio_Pagado"].apply(num_seguro).sum()) if not activos.empty and "Precio_Pagado" in activos.columns else 0
-    liquidez_disp = max(0, int(presupuesto_usuario) - cap_inmovilizado)
+    cap_auto_cartera = int(activos["Precio_Pagado"].apply(num_seguro).sum()) if not activos.empty and "Precio_Pagado" in activos.columns else 0
+    saldos_cfg = cargar_saldos_personalizados(es_admin, presupuesto_usuario, cap_auto_cartera)
+
+    if saldos_cfg.get("modo_capital") == "Manual (Monto fijo)":
+        cap_inmovilizado = int(saldos_cfg.get("capital_manual", cap_auto_cartera))
+    else:
+        cap_inmovilizado = cap_auto_cartera
+
+    if saldos_cfg.get("modo_liquidez") == "Manual":
+        liquidez_disp = int(saldos_cfg.get("liquidez_manual", max(0, int(presupuesto_usuario) - cap_inmovilizado)))
+    else:
+        liquidez_disp = max(0, int(presupuesto_usuario) - cap_inmovilizado)
+
+    base_total_patrimonio = max(1, int(presupuesto_usuario) if saldos_cfg.get("modo_liquidez") != "Manual" else (liquidez_disp + cap_inmovilizado))
     ganancia_realizada = int(vendidos["Ganancia_Neta"].apply(num_seguro).sum()) if not vendidos.empty and "Ganancia_Neta" in vendidos.columns else 0
     aciertos = len(vendidos[vendidos["Ganancia_Neta"].apply(num_seguro) > 0]) if not vendidos.empty and "Ganancia_Neta" in vendidos.columns else 0
     efectividad = round((aciertos / len(vendidos) * 100), 1) if not vendidos.empty else 0.0
@@ -1148,6 +1203,7 @@ try:
 
         filas_cartera_viva.append({
             "Idx_Cartera": idx_orig,
+            "Quitar": False,
             "Jugador": nom_a,
             "Estrategia": est_a,
             "Costo_Pagado": costo_a,
@@ -1166,11 +1222,11 @@ try:
 
     tenencia_total = vnr_total - cap_inmovilizado
     color_vnr = "kpi-purple" if tenencia_total >= 0 else "kpi-crimson"
-    pct_libre = round(liquidez_disp / max(1, presupuesto_usuario) * 100)
+    pct_libre = round(liquidez_disp / base_total_patrimonio * 100)
 
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
-        st.markdown(f"""<div class="kpi-card kpi-green"><div class="kpi-title">💵 Liquidez Disponible</div><div class="kpi-value">{fmt_monedas(liquidez_disp, modo_streamer)}</div><div class="kpi-badge">🟢 {pct_libre}% de {fmt_monedas(presupuesto_usuario, modo_streamer)}</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-green"><div class="kpi-title">💵 Liquidez Disponible</div><div class="kpi-value">{fmt_monedas(liquidez_disp, modo_streamer)}</div><div class="kpi-badge">🟢 {pct_libre}% disponible</div></div>""", unsafe_allow_html=True)
     with k2:
         st.markdown(f"""<div class="kpi-card kpi-blue"><div class="kpi-title">📦 Capital Inmovilizado</div><div class="kpi-value">{fmt_monedas(cap_inmovilizado, modo_streamer)}</div><div class="kpi-badge">🃏 {len(activos)} cartas en club</div></div>""", unsafe_allow_html=True)
     with k3:
@@ -1179,6 +1235,40 @@ try:
         st.markdown(f"""<div class="kpi-card kpi-gold"><div class="kpi-title">💰 Ganancia Realizada</div><div class="kpi-value">{fmt_monedas(ganancia_realizada, modo_streamer, True)}</div><div class="kpi-badge">📈 {len(vendidos)} ventas cerradas</div></div>""", unsafe_allow_html=True)
     with k5:
         st.markdown(f"""<div class="kpi-card kpi-purple"><div class="kpi-title">🎯 Efectividad Trading</div><div class="kpi-value">{efectividad}%</div><div class="kpi-badge">🏆 {aciertos}/{len(vendidos)} positivos</div></div>""", unsafe_allow_html=True)
+
+    # MEJORA 1: PANEL EN PÁGINA PARA MODIFICAR LIQUIDEZ DISPONIBLE Y CAPITAL INMOVILIZADO
+    with st.expander("💳 Modificar Liquidez Disponible y Capital Inmovilizado desde la Página", expanded=False):
+        st.caption("Ajustá manualmente tus monedas líquidas en caja y tu capital inmovilizado, o volvé al cálculo automático basado en tus cartas:")
+        c_sal1, c_sal2, c_sal3, c_sal4, c_sal5 = st.columns([1.3, 1.3, 1.3, 1, 1])
+        with c_sal1:
+            inp_liquidez = st.number_input("💵 Liquidez Disponible (Monedas)", min_value=0, max_value=50000000, step=1000, value=int(liquidez_disp))
+        with c_sal2:
+            idx_m_cap = 1 if saldos_cfg.get("modo_capital") == "Manual (Monto fijo)" else 0
+            inp_modo_cap = st.selectbox("📦 Modo Capital Inmovilizado", ["Automático (Suma de mis cartas)", "Manual (Monto fijo)"], index=idx_m_cap)
+        with c_sal3:
+            inp_cap_man = st.number_input("📦 Capital Inmovilizado Manual", min_value=0, max_value=50000000, step=1000, value=int(cap_inmovilizado), disabled=(inp_modo_cap != "Manual (Monto fijo)"))
+        with c_sal4:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("💾 Guardar Saldos", use_container_width=True):
+                guardar_saldos_personalizados({
+                    "modo_liquidez": "Manual",
+                    "liquidez_manual": int(inp_liquidez),
+                    "modo_capital": inp_modo_cap,
+                    "capital_manual": int(inp_cap_man)
+                }, es_admin)
+                st.success("✅ ¡Liquidez y Capital actualizados!")
+                st.rerun()
+        with c_sal5:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🔄 Modo Automático", use_container_width=True):
+                guardar_saldos_personalizados({
+                    "modo_liquidez": "Automático",
+                    "liquidez_manual": max(0, int(presupuesto_usuario) - cap_auto_cartera),
+                    "modo_capital": "Automático (Suma de mis cartas)",
+                    "capital_manual": cap_auto_cartera
+                }, es_admin)
+                st.info("Calculando saldos automáticamente según tu presupuesto y cartas.")
+                st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1193,10 +1283,47 @@ try:
     ])
 
     with tab1:
-        st.subheader("🎯 Monitoreo de Cartera Activa (Escribí en '💸 Vendido_A' para liquidar en 1 Clic)")
+        st.subheader("🎯 Monitoreo de Cartera Activa (Editá Jugador/Costo, tildá '🗑️ Quitar' o escribí en '💸 Vendido_A')")
+
+        # MEJORA 2A: AGREGAR JUGADOR DIRECTAMENTE DESDE LA PÁGINA PRINCIPAL
+        with st.expander("➕ Agregar Jugador Rápido a Mi Cartera desde acá", expanded=False):
+            ca1, ca2, ca3, ca4 = st.columns([2, 1.2, 1.2, 1])
+            with ca1:
+                nom_add_rap = st.text_input("Nombre del Jugador", placeholder="Ej: Valverde, Saliba, Theo...", key="inp_nom_rap")
+            with ca2:
+                costo_add_rap = st.number_input("Costo Pagado (Monedas)", min_value=200, max_value=15000000, step=250, value=12000, key="inp_cost_rap")
+            with ca3:
+                est_add_rap = st.selectbox("Estrategia", ["Flipping Meta", "Fodder SBC", "TOTW / IF", "Evolución / Hype"], key="inp_est_rap")
+            with ca4:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("➕ Sumar Jugador", use_container_width=True):
+                    if nom_add_rap.strip():
+                        df_c_act = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
+                        nueva_f = pd.DataFrame([{
+                            "Jugador_Exacto": nom_add_rap.strip().title(),
+                            "Estrategia": est_add_rap,
+                            "Precio_Pagado": int(costo_add_rap),
+                            "Estado": "Activo",
+                            "Precio_Venta": 0,
+                            "Costo_EA_Tax": 0,
+                            "Ganancia_Neta": 0,
+                            "ROI_%": 0.0,
+                            "Fecha_Compra": ahora_arg().strftime("%Y-%m-%d %H:%M"),
+                            "Fecha_Venta": ""
+                        }])
+                        df_c_act = pd.concat([df_c_act, nueva_f], ignore_index=True)
+                        guardar_hoja_sincronizada(df_c_act, "Mi_Cartera", es_admin=es_admin)
+                        if saldos_cfg.get("modo_liquidez") == "Manual":
+                            saldos_cfg["liquidez_manual"] = max(0, int(saldos_cfg.get("liquidez_manual", liquidez_disp)) - int(costo_add_rap))
+                            guardar_saldos_personalizados(saldos_cfg, es_admin)
+                        st.success(f"¡{nom_add_rap.title()} sumado a tu cartera activa!")
+                        st.rerun()
+
+        # MEJORA 2B: TABLA DE CARTERA ACTIVA 100% EDITABLE (EDITAR JUGADOR/COSTO, QUITAR O VENDER EN 1 CLIC)
         if filas_cartera_viva:
             df_viva = pd.DataFrame(filas_cartera_viva)
-            cols_deshabilitadas_viva = [c for c in df_viva.columns if c != "Vendido_A"]
+            cols_editables_viva = ["Quitar", "Jugador", "Estrategia", "Costo_Pagado", "Vendido_A"]
+            cols_deshabilitadas_viva = [c for c in df_viva.columns if c not in cols_editables_viva]
 
             edicion_viva = st.data_editor(
                 df_viva,
@@ -1205,7 +1332,10 @@ try:
                 disabled=cols_deshabilitadas_viva,
                 column_config={
                     "Idx_Cartera": None,
-                    "Costo_Pagado": st.column_config.NumberColumn("💵 Costo", format="%d mnds"),
+                    "Quitar": st.column_config.CheckboxColumn("🗑️ Quitar"),
+                    "Jugador": st.column_config.TextColumn("👤 Jugador (Editable)"),
+                    "Estrategia": st.column_config.SelectboxColumn("🏷️ Estrategia", options=["Flipping Meta", "Fodder SBC", "TOTW / IF", "Evolución / Hype"]),
+                    "Costo_Pagado": st.column_config.NumberColumn("💵 Costo (Editable)", min_value=200, max_value=15000000, step=250, format="%d mnds"),
                     "Empate_5%": st.column_config.NumberColumn("⚖️ Empate (5%)", format="%d mnds"),
                     "Mercado_Hoy": st.column_config.NumberColumn("📊 Mercado Hoy", format="%d mnds"),
                     "Precio_Lazy_1h": st.column_config.NumberColumn(f"🎯 Lazy (+{lazy_pct}%)", format="%d mnds"),
@@ -1215,25 +1345,42 @@ try:
                     "ROI_Diario_%": st.column_config.NumberColumn("⚡ ROI/Día", format="%+.1f%%"),
                     "Vendido_A": st.column_config.NumberColumn("💸 Vendido_A (Editar)", min_value=0, max_value=15000000, step=250, format="%d mnds"),
                     "Link": st.column_config.LinkColumn("🔗 Web", display_text="Abrir Carta")
-                }
+                },
+                key="editor_cartera_viva"
             )
 
-            filas_a_liquidar = edicion_viva[edicion_viva["Vendido_A"].apply(num_seguro) > 0]
-            if not filas_a_liquidar.empty:
-                if st.button(f"💰 Liquidar {len(filas_a_liquidar)} Venta(s) Cargada(s) en Tabla (5% Tax)"):
-                    df_c_upd = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
-                    df_c_upd["Estado"] = df_c_upd["Estado"].astype(object)
-                    if "Fecha_Venta" not in df_c_upd.columns:
-                        df_c_upd["Fecha_Venta"] = ""
-                    df_c_upd["Fecha_Venta"] = df_c_upd["Fecha_Venta"].astype(object)
+            if st.button("💾 Aplicar Cambios en Cartera Activa (Guardar Ediciones / Liquidar Ventas / Quitar Marcadas)", use_container_width=True):
+                df_c_upd = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
+                df_c_upd["Estado"] = df_c_upd["Estado"].astype(object)
+                if "Fecha_Venta" not in df_c_upd.columns:
+                    df_c_upd["Fecha_Venta"] = ""
+                df_c_upd["Fecha_Venta"] = df_c_upd["Fecha_Venta"].astype(object)
 
-                    for _, r_liq in filas_a_liquidar.iterrows():
-                        idx_c_orig = int(r_liq["Idx_Cartera"])
-                        p_venta_liq = int(num_seguro(r_liq["Vendido_A"]))
-                        p_comp_liq = float(num_seguro(df_c_upd.loc[idx_c_orig, "Precio_Pagado"], 0))
+                indices_a_borrar = []
+                delta_caja = 0
+
+                for _, r_ed in edicion_viva.iterrows():
+                    idx_c_orig = int(r_ed["Idx_Cartera"])
+                    if idx_c_orig not in df_c_upd.index:
+                        continue
+
+                    if bool(r_ed["Quitar"]):
+                        indices_a_borrar.append(idx_c_orig)
+                        continue
+
+                    nuevo_nom = str(r_ed["Jugador"]).strip().title()
+                    nueva_est = str(r_ed["Estrategia"]).strip()
+                    nuevo_costo = int(num_seguro(r_ed["Costo_Pagado"], 0))
+                    p_venta_liq = int(num_seguro(r_ed["Vendido_A"], 0))
+
+                    df_c_upd.loc[idx_c_orig, "Jugador_Exacto"] = nuevo_nom
+                    df_c_upd.loc[idx_c_orig, "Estrategia"] = nueva_est
+                    df_c_upd.loc[idx_c_orig, "Precio_Pagado"] = nuevo_costo
+
+                    if p_venta_liq > 0:
                         tax_liq = int(round(p_venta_liq * 0.05))
-                        neto_liq = int(round((p_venta_liq - tax_liq) - p_comp_liq))
-                        roi_liq = round((neto_liq / p_comp_liq) * 100, 2) if p_comp_liq > 0 else 0.0
+                        neto_liq = int(round((p_venta_liq - tax_liq) - nuevo_costo))
+                        roi_liq = round((neto_liq / nuevo_costo) * 100, 2) if nuevo_costo > 0 else 0.0
 
                         df_c_upd.loc[idx_c_orig, "Estado"] = "Vendido"
                         df_c_upd.loc[idx_c_orig, "Precio_Venta"] = p_venta_liq
@@ -1241,12 +1388,20 @@ try:
                         df_c_upd.loc[idx_c_orig, "Ganancia_Neta"] = neto_liq
                         df_c_upd.loc[idx_c_orig, "ROI_%"] = roi_liq
                         df_c_upd.loc[idx_c_orig, "Fecha_Venta"] = ahora_arg().strftime("%Y-%m-%d %H:%M")
+                        delta_caja += (p_venta_liq - tax_liq)
 
-                    guardar_hoja_sincronizada(df_c_upd, "Mi_Cartera", es_admin=es_admin)
-                    st.success("¡Ventas liquidadas y registradas en el Libro Mayor!")
-                    st.rerun()
+                if indices_a_borrar:
+                    df_c_upd = df_c_upd.drop(index=indices_a_borrar).reset_index(drop=True)
+
+                guardar_hoja_sincronizada(df_c_upd, "Mi_Cartera", es_admin=es_admin)
+                if delta_caja != 0 and saldos_cfg.get("modo_liquidez") == "Manual":
+                    saldos_cfg["liquidez_manual"] = max(0, int(saldos_cfg.get("liquidez_manual", liquidez_disp)) + delta_caja)
+                    guardar_saldos_personalizados(saldos_cfg, es_admin)
+
+                st.success("✅ ¡Cambios aplicados en tu Cartera Activa!")
+                st.rerun()
         else:
-            st.info("No tenés cartas activas en cartera. Podés agregarlas desde la barra lateral o con 1 clic en la pestaña Radar.")
+            st.info("No tenés cartas activas en cartera. Podés agregarlas desde el desplegable de arriba, desde la barra lateral o con 1 clic en la pestaña Radar.")
 
         # GRÁFICOS: VALUACIÓN, DIVERSIFICACIÓN DE RIESGO Y CURVA P&L
         col_g1, col_g2, col_g3 = st.columns(3)
@@ -1267,8 +1422,8 @@ try:
                 df_ag_est = pd.DataFrame(filas_cartera_viva).groupby("Estrategia")["Costo_Pagado"].sum().reset_index()
                 for _, r_est in df_ag_est.iterrows():
                     filas_div.append({"Rubro": str(r_est["Estrategia"]), "Monedas": int(r_est["Costo_Pagado"])})
-                    if int(r_est["Costo_Pagado"]) > (presupuesto_usuario * 0.60):
-                        st.warning(f"⚠️ **Alerta de Concentración:** Tenés más del 60% de tu presupuesto en **{r_est['Estrategia']}** (`{int(r_est['Costo_Pagado']):,} mnds`). Diversificá para reducir riesgo.")
+                    if int(r_est["Costo_Pagado"]) > (base_total_patrimonio * 0.60):
+                        st.warning(f"⚠️ **Alerta de Concentración:** Tenés más del 60% de tu capital en **{r_est['Estrategia']}** (`{int(r_est['Costo_Pagado']):,} mnds`). Diversificá para reducir riesgo.")
             df_div = pd.DataFrame(filas_div)
             fig_pie = px.pie(
                 df_div, values="Monedas", names="Rubro", hole=0.55,
@@ -1292,7 +1447,7 @@ try:
                 fig_curva.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=340)
                 st.plotly_chart(fig_curva, use_container_width=True)
 
-        # ESTADO DE RESULTADOS + LIBRO MAYOR CON RE-COMPRA 1-CLIC + EXPORTADOR EXCEL
+        # ESTADO DE RESULTADOS + LIBRO MAYOR CON RE-COMPRA, EDICIÓN Y BORRADO + EXPORTADOR EXCEL
         col_pnl1, col_pnl2 = st.columns([1, 1])
         with col_pnl1:
             st.subheader("📑 Estado de Resultados (Modelo Costeo Variable)")
@@ -1312,9 +1467,10 @@ try:
                 {"Rubro Contable": "(=) Ingreso Neto de Realización", "Monto (Monedas)": ingreso_neto},
                 {"Rubro Contable": "(-) Costo de Adquisición de Cartas Vendidas (CMV)", "Monto (Monedas)": -costo_adq},
                 {"Rubro Contable": "(=) CONTRIBUCIÓN MARGINAL NETA (GANANCIA REALIZADA)", "Monto (Monedas)": contrib_marginal},
-                {"Rubro Contable": "📦 Inventario Activo (Valuado a Costo Histórico)", "Monto (Monedas)": cap_inmovilizado},
+                {"Rubro Contable": "📦 Inventario Activo (Capital Inmovilizado)", "Monto (Monedas)": cap_inmovilizado},
                 {"Rubro Contable": "📈 Inventario Activo a VNR Dual FB+GG (Neto 5% Tax)", "Monto (Monedas)": vnr_total},
                 {"Rubro Contable": "⚖️ Resultado por Tenencia (No Realizado)", "Monto (Monedas)": tenencia_total},
+                {"Rubro Contable": "💵 Liquidez Disponible (Caja Actual)", "Monto (Monedas)": liquidez_disp},
             ])
             styled_er = aplicar_estilo_seguro(
                 df_estado_resultados,
@@ -1340,35 +1496,68 @@ try:
             )
 
         with col_pnl2:
-            st.subheader("📜 Libro Mayor de Ventas (Tildá 🔄 para Re-Comprar en 1 Clic)")
+            st.subheader("📜 Libro Mayor de Ventas (Re-Comprá 🔄, Editá o Quitá 🗑️)")
             if not vendidos.empty:
                 if any(vendidos["Precio_Venta"].apply(num_seguro) == 0):
-                    st.caption("💡 Tip: Tenés una carta marcada como 'Vendido' con Precio_Venta en 0. Podés cargarle su precio de venta real desde la barra lateral en '💰 Cerrar / Corregir Venta'.")
+                    st.caption("💡 Tip: Podés editar el precio de venta directamente en la columna '💰 Venta' de acá abajo y tocar Guardar.")
                 df_vend_edit = vendidos.copy()
+                df_vend_edit["Idx_Venta"] = df_vend_edit.index
+                df_vend_edit.insert(0, "Quitar_Venta", False)
                 df_vend_edit.insert(0, "Re_Comprar", False)
+
+                cols_edit_vend = ["Re_Comprar", "Quitar_Venta", "Jugador_Exacto", "Estrategia", "Precio_Pagado", "Precio_Venta"]
                 edicion_vend = st.data_editor(
                     df_vend_edit,
                     use_container_width=True,
                     hide_index=True,
-                    disabled=[c for c in df_vend_edit.columns if c != "Re_Comprar"],
+                    disabled=[c for c in df_vend_edit.columns if c not in cols_edit_vend],
                     column_config={
+                        "Idx_Venta": None,
                         "Re_Comprar": st.column_config.CheckboxColumn("🔄 Re-Comprar"),
+                        "Quitar_Venta": st.column_config.CheckboxColumn("🗑️ Quitar"),
+                        "Jugador_Exacto": st.column_config.TextColumn("👤 Jugador"),
                         "Precio_Pagado": st.column_config.NumberColumn("💵 Costo", format="%d mnds"),
                         "Precio_Venta": st.column_config.NumberColumn("💰 Venta", format="%d mnds"),
                         "Ganancia_Neta": st.column_config.NumberColumn("✨ Neto", format="%+d mnds"),
                         "ROI_%": st.column_config.NumberColumn("📈 ROI %", format="%+.1f%%"),
-                    }
+                    },
+                    key="editor_libro_ventas"
                 )
-                recompras_sel = edicion_vend[edicion_vend["Re_Comprar"] == True]
-                if not recompras_sel.empty:
-                    if st.button(f"🔄 Re-Comprar {len(recompras_sel)} carta(s) y enviar a Cartera Activa"):
-                        df_c_act = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
-                        nuevas_re = []
-                        for _, r_re in recompras_sel.iterrows():
+
+                if st.button("💾 Guardar Cambios / Procesar Re-Compras en Libro Mayor", use_container_width=True):
+                    df_c_act = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
+                    borrar_v_idx = []
+                    nuevas_re = []
+                    costo_recompras = 0
+
+                    for _, r_v in edicion_vend.iterrows():
+                        idx_v = int(r_v["Idx_Venta"])
+                        if idx_v not in df_c_act.index:
+                            continue
+                        if bool(r_v["Quitar_Venta"]):
+                            borrar_v_idx.append(idx_v)
+                            continue
+
+                        pc_v = int(num_seguro(r_v["Precio_Pagado"], 0))
+                        pv_v = int(num_seguro(r_v["Precio_Venta"], 0))
+                        tx_v = int(round(pv_v * 0.05))
+                        nt_v = int(round((pv_v - tx_v) - pc_v)) if pv_v > 0 else 0
+                        roi_v = round((nt_v / pc_v) * 100, 2) if pc_v > 0 and pv_v > 0 else 0.0
+
+                        df_c_act.loc[idx_v, "Jugador_Exacto"] = str(r_v["Jugador_Exacto"]).strip().title()
+                        df_c_act.loc[idx_v, "Estrategia"] = str(r_v["Estrategia"]).strip()
+                        df_c_act.loc[idx_v, "Precio_Pagado"] = pc_v
+                        df_c_act.loc[idx_v, "Precio_Venta"] = pv_v
+                        df_c_act.loc[idx_v, "Costo_EA_Tax"] = tx_v
+                        df_c_act.loc[idx_v, "Ganancia_Neta"] = nt_v
+                        df_c_act.loc[idx_v, "ROI_%"] = roi_v
+
+                        if bool(r_v["Re_Comprar"]):
+                            costo_recompras += pc_v
                             nuevas_re.append({
-                                "Jugador_Exacto": str(r_re.get("Jugador_Exacto", "Carta")),
-                                "Estrategia": str(r_re.get("Estrategia", "Flipping Meta")),
-                                "Precio_Pagado": int(num_seguro(r_re.get("Precio_Pagado", 10000))),
+                                "Jugador_Exacto": str(r_v.get("Jugador_Exacto", "Carta")).strip().title(),
+                                "Estrategia": str(r_v.get("Estrategia", "Flipping Meta")),
+                                "Precio_Pagado": pc_v,
                                 "Estado": "Activo",
                                 "Precio_Venta": 0,
                                 "Costo_EA_Tax": 0,
@@ -1377,10 +1566,18 @@ try:
                                 "Fecha_Compra": ahora_arg().strftime("%Y-%m-%d %H:%M"),
                                 "Fecha_Venta": ""
                             })
+
+                    if borrar_v_idx:
+                        df_c_act = df_c_act.drop(index=borrar_v_idx).reset_index(drop=True)
+                    if nuevas_re:
                         df_c_act = pd.concat([df_c_act, pd.DataFrame(nuevas_re)], ignore_index=True)
-                        guardar_hoja_sincronizada(df_c_act, "Mi_Cartera", es_admin=es_admin)
-                        st.success("¡Cartas re-compradas y enviadas a tu Cartera Activa!")
-                        st.rerun()
+                        if saldos_cfg.get("modo_liquidez") == "Manual":
+                            saldos_cfg["liquidez_manual"] = max(0, int(saldos_cfg.get("liquidez_manual", liquidez_disp)) - costo_recompras)
+                            guardar_saldos_personalizados(saldos_cfg, es_admin)
+
+                    guardar_hoja_sincronizada(df_c_act, "Mi_Cartera", es_admin=es_admin)
+                    st.success("✅ ¡Libro Mayor actualizado con éxito!")
+                    st.rerun()
             else:
                 st.info("Todavía no hay ventas cerradas registradas.")
 
@@ -1414,6 +1611,9 @@ try:
                 fig_proy.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=280)
                 st.plotly_chart(fig_proy, use_container_width=True)
 
+    # ==========================================
+    # PESTAÑA 2: RADAR CON LÍMITE DE PRECIO AMPLIADO HASTA 15,000,000 MNDS
+    # ==========================================
     with tab2:
         st.subheader("🔍 Lupa Visual Histórica (Evolución de Precio, Piso, Promedio y Zona de Puja)")
         if not df_historial.empty and "Jugador" in df_historial.columns:
@@ -1449,7 +1649,7 @@ try:
 
         if not df_ult_corte.empty:
             with st.expander("📲 Copiar Resumen de Gangas para WhatsApp / Discord / Telegram"):
-                df_top_g = df_ult_corte[df_ult_corte["Precio_Actual"].apply(num_seguro) <= presupuesto_usuario].copy()
+                df_top_g = df_ult_corte.copy()
                 if "Variacion_Bruta_%" in df_top_g.columns:
                     df_top_g = df_top_g.sort_values(by="Variacion_Bruta_%").head(5)
                 else:
@@ -1464,8 +1664,10 @@ try:
                 st.code("\n".join(lineas_share), language="markdown")
 
         st.markdown("---")
-        st.subheader("⚡ Padrón Dual Interactivo (Tildá 🛒 y envialas directo a tu Cartera con 1 Clic)")
-        c_f1, c_f2, c_f3 = st.columns([2, 1, 1])
+        st.subheader("⚡ Padrón Dual Interactivo (Límite Desbloqueado hasta 15,000,000 mnds + Compra 1-Clic)")
+
+        # MEJORA 3: FILTRO DE PRECIO MÁXIMO AMPLIADO HASTA 15,000,000 DE MONEDAS
+        c_f1, c_f2, c_f3, c_f4 = st.columns([1.8, 1.4, 1.1, 1.3])
         with c_f1:
             busqueda_jug = st.text_input("🔍 Filtrar por Nombre, Media o Tipo de Carta", placeholder="Ej: 86, TOTW, Mbappe...")
         with c_f2:
@@ -1482,11 +1684,22 @@ try:
                 ]
             )
         with c_f3:
-            max_slider = max(200000, int(presupuesto_usuario))
-            tope_precio_filtro = st.slider("Precio Máximo (Monedas)", min_value=500, max_value=max_slider, value=min(int(presupuesto_usuario), max_slider), step=2500)
+            piso_precio_filtro = st.number_input("Precio Mínimo (mnds)", min_value=0, max_value=TOPE_RADAR_MAXIMO, value=200, step=500)
+        with c_f4:
+            tope_precio_filtro = st.number_input("Precio Máximo (Hasta 15M)", min_value=500, max_value=TOPE_RADAR_MAXIMO, value=TOPE_RADAR_MAXIMO, step=25000)
+
+        tope_slider_radar = st.slider(
+            "🎚️ Ajustar Rango de Precio Máximo con Deslizador (Monedas)",
+            min_value=500,
+            max_value=TOPE_RADAR_MAXIMO,
+            value=int(tope_precio_filtro),
+            step=10000
+        )
+        tope_final_radar = min(int(tope_precio_filtro), int(tope_slider_radar)) if tope_slider_radar != TOPE_RADAR_MAXIMO else int(tope_precio_filtro)
 
         if not df_ult_corte.empty:
-            df_filtrado = df_ult_corte[df_ult_corte["Precio_Actual"].apply(num_seguro) <= tope_precio_filtro].copy()
+            serie_precios_r = df_ult_corte["Precio_Actual"].apply(num_seguro)
+            df_filtrado = df_ult_corte[(serie_precios_r >= piso_precio_filtro) & (serie_precios_r <= tope_final_radar)].copy()
             if busqueda_jug.strip():
                 df_filtrado = df_filtrado[df_filtrado["Jugador"].astype(str).str.lower().str.contains(busqueda_jug.strip().lower(), na=False)]
             if filtro_accion == "🟢 COMPRAR" and "Accion" in df_filtrado.columns:
@@ -1528,9 +1741,11 @@ try:
                 if st.button(f"📥 Enviar {len(seleccionadas_1clic)} carta(s) a Mi Cartera"):
                     df_c_act = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
                     nuevas_filas = []
+                    costo_1clic_tot = 0
                     for _, r_sel in seleccionadas_1clic.iterrows():
                         nom_limpio = str(r_sel["Jugador"]).split(" (")[0].strip()
                         p_compra_1c = num_seguro(r_sel["Precio_Actual"], 0)
+                        costo_1clic_tot += p_compra_1c
                         est_auto = autodetectar_estrategia(r_sel["Jugador"], p_compra_1c)
                         nuevas_filas.append({
                             "Jugador_Exacto": nom_limpio,
@@ -1546,6 +1761,9 @@ try:
                         })
                     df_c_act = pd.concat([df_c_act, pd.DataFrame(nuevas_filas)], ignore_index=True)
                     guardar_hoja_sincronizada(df_c_act, "Mi_Cartera", es_admin=es_admin)
+                    if saldos_cfg.get("modo_liquidez") == "Manual":
+                        saldos_cfg["liquidez_manual"] = max(0, int(saldos_cfg.get("liquidez_manual", liquidez_disp)) - costo_1clic_tot)
+                        guardar_saldos_personalizados(saldos_cfg, es_admin)
                     st.success("¡Cartas agregadas a tu Cartera!")
                     st.rerun()
 
@@ -1611,7 +1829,7 @@ try:
             med_sim = st.selectbox("Media Objetivo", [84, 85, 86, 87, 88, 89], index=2)
         piso_def, techo_def = ref_fodder_sim[med_sim]
         with cs2:
-            monto_inv_fod = st.number_input("Monedas a Invertir", min_value=5000, max_value=10000000, value=min(50000, int(presupuesto_usuario)), step=5000)
+            monto_inv_fod = st.number_input("Monedas a Invertir", min_value=5000, max_value=10000000, value=min(50000, max(5000, int(liquidez_disp))), step=5000)
         with cs3:
             p_compra_fod = st.number_input("Precio Compra por Carta", min_value=700, max_value=100000, value=int(pisos_vivos.get(med_sim, piso_def)), step=100)
         with cs4:
@@ -1718,7 +1936,7 @@ try:
                 nuevo_rep_txt = generar_reporte_estrategico_vivo(
                     df_ult_corte,
                     filas_cartera_viva,
-                    int(presupuesto_usuario),
+                    int(max(presupuesto_usuario, liquidez_disp)),
                     roi_puja_pct,
                     lazy_pct,
                     etiqueta_plat,
@@ -1776,14 +1994,14 @@ try:
 
             if btn_preguntar_ia and pregunta_usuario.strip():
                 with st.spinner("🤖 Analizando tu consulta contra la base de datos en vivo..."):
-                    df_disp_q = df_ult_corte[df_ult_corte["Precio_Actual"].apply(num_seguro) <= presupuesto_usuario].head(25) if not df_ult_corte.empty else pd.DataFrame()
+                    df_disp_q = df_ult_corte[df_ult_corte["Precio_Actual"].apply(num_seguro) <= max(presupuesto_usuario, liquidez_disp)].head(25) if not df_ult_corte.empty else pd.DataFrame()
                     cols_q = [c for c in ["Jugador", "Precio_Actual", "Fuente_Mejor_Precio", "Variacion_Bruta_%", "Senal_Trading", "Puja_Max_10%_ROI", "Precio_Lazy_Sugerido"] if c in df_disp_q.columns]
                     muestra_q = df_disp_q[cols_q].to_string(index=False) if not df_disp_q.empty else "Sin datos."
                     cartera_q = ", ".join([f"{c['Jugador']} (Costo {c['Costo_Pagado']:,}, Hoy {c['Mercado_Hoy']:,})" for c in filas_cartera_viva]) if filas_cartera_viva else "Sin cartas activas."
 
                     prompt_q = f"""
                     Actuá como Asesor Experto de Trading en EA Sports FC 27 ({etiqueta_plat}).
-                    Presupuesto del usuario: {presupuesto_usuario:,} mnds (Liquidez libre: {liquidez_disp:,} mnds).
+                    Liquidez libre del usuario: {liquidez_disp:,} mnds (Capital inmovilizado: {cap_inmovilizado:,} mnds).
                     Reglas del usuario: Puja +{roi_puja_pct}% ROI, Lazy +{lazy_pct}%, Tax EA 5%.
                     Cartera activa del usuario: {cartera_q}
                     Muestra del padrón actual en vivo:
