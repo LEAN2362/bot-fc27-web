@@ -3,4 +3,5 @@ pandas
 plotly
 openpyxl
 gspread
-oauth2client
+requests
+google-genai
