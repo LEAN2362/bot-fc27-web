@@ -2120,13 +2120,36 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
     texto_limpio = f"🤖 *REPORTE ESTRATÉGICO DUAL FB+GG ({dia_hoy})*\n━━━━━━━━━━━━━━━━━━\n{reporte_estrategico_ia.replace('**', '*')}" if reporte_estrategico_ia else "🟢 Escaneo masivo completado."
     enviar_alerta_telegram(texto_limpio)
 
+    df_clubes_cloud_prev = pd.DataFrame()
+    if os.path.exists(archivo_excel):
+        try:
+            df_clubes_cloud_prev = pd.read_excel(archivo_excel, sheet_name="Clubes_Cloud")
+        except Exception:
+            df_clubes_cloud_prev = pd.DataFrame()
+
     if modo_elegido not in ["2", "5"] and df_viejo is not None and not df_viejo.empty:
         for col in df_nuevo.columns:
             if col not in df_viejo.columns:
                 df_viejo[col] = ""
         df_combinado = pd.concat([df_viejo[df_nuevo.columns], df_nuevo], ignore_index=True)
-        df_recientes = df_combinado.tail(25000)
-        # Preservar el último registro histórico con Precio_Futbin > 0 si quedó fuera de las 25.000 filas recientes
+
+        # Compactación inteligente: 48h en alta resolución (cada 30 min) + 1 cierre diario por carta para días previos
+        try:
+            corte_48h_str = (ahora_arg() - timedelta(hours=48)).strftime("%Y-%m-%d %H:%M")
+            fechas_str = df_combinado["Fecha"].astype(str)
+            df_48h = df_combinado[fechas_str >= corte_48h_str].copy()
+            df_antiguos = df_combinado[fechas_str < corte_48h_str].copy()
+            if not df_antiguos.empty:
+                df_antiguos["_Dia"] = df_antiguos["Fecha"].astype(str).str.slice(0, 10)
+                df_cierres_diarios = df_antiguos.drop_duplicates(subset=["_Dia", "Enlace_Futbin"], keep="last").drop(columns=["_Dia"])
+                df_compacto = pd.concat([df_cierres_diarios, df_48h], ignore_index=True)
+            else:
+                df_compacto = df_48h
+        except Exception:
+            df_compacto = df_combinado
+
+        df_recientes = df_compacto.tail(25000)
+        # Preservar siempre el último registro histórico con Precio_Futbin > 0
         mask_fb_valido = pd.to_numeric(df_combinado["Precio_Futbin"], errors="coerce").fillna(0) > 0
         if mask_fb_valido.any():
             df_semilla_fb = df_combinado[mask_fb_valido].drop_duplicates(subset=["Enlace_Futbin"], keep="last")
@@ -2156,6 +2179,8 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                 df_totw.to_excel(writer, index=False, sheet_name="Radar_TOTW")
             if not df_domino.empty:
                 df_domino.to_excel(writer, index=False, sheet_name="Radar_Links_Domino")
+            if not df_clubes_cloud_prev.empty:
+                df_clubes_cloud_prev.to_excel(writer, index=False, sheet_name="Clubes_Cloud")
         formatear_dashboard_financiero_excel(archivo_excel)
     except Exception as e:
         print(f"⚠️ Aviso guardando Excel local: {e}")
