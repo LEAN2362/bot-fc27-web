@@ -190,12 +190,45 @@ def llamar_gemini_turbo(prompt):
 def sin_tildes(texto):
     return ''.join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn')
 
+def categoria_version_carta(texto_nombre_o_tipo):
+    """Clasifica la versión de la carta para no mezclar Oro con TOTW/IF, Icon, Hero o Promo del mismo jugador."""
+    t = sin_tildes(str(texto_nombre_o_tipo)).upper()
+    if any(k in t for k in ["TOTW", "IN-FORM", "INFORM", " - IF"]):
+        return "totw"
+    if "ICON" in t:
+        return "icon"
+    if "HERO" in t:
+        return "hero"
+    if any(k in t for k in ["EVO", "EVOLUTION", "PROMO", "SPECIAL", "RTTK", "RTTF", "TRAILBLAZER", "CENTURION", "THUNDER", "TOTY", "TOTS", "FUTTIES"]):
+        return "promo"
+    return "base"
+
 def clave_cruce(nombre_completo):
     media_match = re.search(r'Media\s*(\d{2})', str(nombre_completo))
     media = media_match.group(1) if media_match else "00"
     nombre_base = str(nombre_completo).split(' (')[0]
+    palabras = [p for p in re.findall(r'[A-Za-z]+', sin_tildes(nombre_base).lower()) if len(p) >= 2]
+    if len(palabras) >= 2:
+        identificador = f"{palabras[0]}_{palabras[-1]}"
+    elif palabras:
+        identificador = palabras[-1]
+    else:
+        identificador = sin_tildes(nombre_base).lower().strip()
+    cat_ver = categoria_version_carta(nombre_completo)
+    if cat_ver in ("totw", "icon", "hero"):
+        return f"{identificador}_{media}_{cat_ver}"
+    return f"{identificador}_{media}"
+
+def clave_cruce_apellido_media(nombre_completo):
+    """Clave secundaria (apellido_media) para emparejar nombres cortos (ej. 'Vini Jr.' vs 'Vinicius Junior') de igual media y categoría."""
+    media_match = re.search(r'Media\s*(\d{2})', str(nombre_completo))
+    media = media_match.group(1) if media_match else "00"
+    nombre_base = str(nombre_completo).split(' (')[0]
     palabras = [p for p in re.findall(r'[A-Za-z]+', sin_tildes(nombre_base).lower()) if len(p) > 2]
-    apellido = palabras[-1] if palabras else nombre_base.lower()
+    apellido = palabras[-1] if palabras else sin_tildes(nombre_base).lower().strip()
+    cat_ver = categoria_version_carta(nombre_completo)
+    if cat_ver in ("totw", "icon", "hero"):
+        return f"{apellido}_{media}_{cat_ver}"
     return f"{apellido}_{media}"
 
 def extraer_respaldo_futbin_historico(df_viejo):
@@ -222,6 +255,7 @@ def extraer_respaldo_futbin_historico(df_viejo):
                 }
                 respaldo_por_enlace[enl_fb_real] = item_fb
                 respaldo_por_clave[clave_cruce(jug_nom)] = item_fb
+                respaldo_por_clave[clave_cruce_apellido_media(jug_nom)] = item_fb
     except Exception:
         pass
     return respaldo_por_enlace, respaldo_por_clave
@@ -282,57 +316,55 @@ def calcular_horas_inmovilizacion(fecha_compra_str):
     except Exception:
         return 0.0
 
+def _parsear_valor_monedas_km(fuente_texto, presupuesto_max):
+    """Convierte con exactitud sufijos K/M (ej. 14.5K -> 14500, 1.25M -> 1250000), miles con coma/punto y enteros múltiplos de escalón EA."""
+    if not fuente_texto:
+        return 0
+    texto_norm = str(fuente_texto).strip()
+
+    # 1. Sufijos K y M (ej. 14.5K, 1,25M, 350k)
+    precios_km = re.findall(r'\b(\d+(?:[.,]\d+)?)\s*([KkMm])\b', texto_norm)
+    for num_s, unidad in precios_km:
+        num_clean = float(num_s.replace(',', '.'))
+        mult = 1000000 if unidad.upper() == 'M' else 1000
+        val = int(round(num_clean * mult))
+        if val > presupuesto_max:
+            return -1
+        if 200 <= val <= presupuesto_max:
+            return val
+
+    # 2. Números con separadores de miles por comas (ej. 14,500 o 1,250,000)
+    precios_comas = re.findall(r'\b(\d{1,3}(?:,\d{3})+)\b', texto_norm)
+    for p_c in precios_comas:
+        val = int(p_c.replace(',', ''))
+        if val > presupuesto_max:
+            return -1
+        if 200 <= val <= presupuesto_max:
+            return val
+
+    # 3. Enteros directos múltiplos de 50 (escalón mínimo de EA)
+    enteros = re.findall(r'\b(\d{3,8})\b', texto_norm)
+    for ent in enteros:
+        val = int(ent)
+        if 200 <= val <= presupuesto_max and (val % 50 == 0):
+            return val
+    return 0
+
 def extraer_precio_robusto(texto_precio, texto_fila, presupuesto_max):
     for fuente in (texto_precio, texto_fila):
         if not fuente:
             continue
-        precios_km = re.findall(r'(\d+(?:\.\d+)?)\s*([KkMm])\b', fuente)
-        for num_s, unidad in precios_km:
-            mult = 1000000 if unidad.upper() == 'M' else 1000
-            val = int(round(float(num_s) * mult))
-            if 200 <= val <= presupuesto_max:
-                return val
-
-        precios_comas = re.findall(r'\b(\d{1,3}(?:,\d{3})+)\b', fuente)
-        for p_c in precios_comas:
-            val = int(p_c.replace(',', ''))
-            if 200 <= val <= presupuesto_max:
-                return val
-
-        enteros = re.findall(r'\b(\d{3,8})\b', fuente)
-        for ent in enteros:
-            val = int(ent)
-            if 200 <= val <= presupuesto_max and (val % 50 == 0):
-                return val
+        val = _parsear_valor_monedas_km(fuente, presupuesto_max)
+        if val > 0:
+            return val
     return 0
 
 def extraer_precio_carta_unica_gg(texto_card, presupuesto_max):
     """Extrae el precio únicamente dentro de la caja individual de cada carta en FUT.GG (Soporta hasta 15M)."""
     if not texto_card:
         return 0
-    precios_km = re.findall(r'(\d+(?:\.\d+)?)\s*([KkMm])\b', texto_card)
-    for num_s, unidad in precios_km:
-        mult = 1000000 if unidad.upper() == 'M' else 1000
-        val = int(round(float(num_s) * mult))
-        if val > presupuesto_max:
-            return 0
-        if 200 <= val <= presupuesto_max:
-            return val
-
-    precios_comas = re.findall(r'\b(\d{1,3}(?:,\d{3})+)\b', texto_card)
-    for p_c in precios_comas:
-        val = int(p_c.replace(',', ''))
-        if val > presupuesto_max:
-            return 0
-        if 200 <= val <= presupuesto_max:
-            return val
-
-    enteros = re.findall(r'\b(\d{3,8})\b', texto_card)
-    for ent in enteros:
-        val = int(ent)
-        if 200 <= val <= presupuesto_max and (val % 50 == 0):
-            return val
-    return 0
+    val = _parsear_valor_monedas_km(texto_card, presupuesto_max)
+    return val if val > 0 else 0
 
 def calcular_estadisticas_historicas(df_viejo):
     stats = {}
@@ -538,10 +570,14 @@ def armar_resumen_flipping_gangas(datos_finales):
 def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_historicas, fecha_actual, respaldo_fb_clave=None):
     respaldo_fb_clave = respaldo_fb_clave or {}
     mapa_gg_clave = {}
+    mapa_gg_sec = {}
     mapa_gg_apellido = {}
     for g in (datos_gg or []):
         if g.get("Media") != "??":
             mapa_gg_clave[g["Clave"]] = g
+            c_sec = clave_cruce_apellido_media(g.get("Jugador_GG", ""))
+            if c_sec not in mapa_gg_sec:
+                mapa_gg_sec[c_sec] = g
         palabras_g = [p for p in g["Nombre_Puro"].split() if len(p) > 2]
         if palabras_g:
             mapa_gg_apellido[palabras_g[-1]] = g
@@ -554,10 +590,11 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
         p_fb = int(jug["Precio_Actual"])
         p_con_fb = int(jug.get("Precio_Consola", p_fb) or p_fb)
         c = clave_cruce(jug["Jugador"])
+        c_sec_fb = clave_cruce_apellido_media(jug["Jugador"])
 
-        g = mapa_gg_clave.get(c)
+        g = mapa_gg_clave.get(c) or mapa_gg_sec.get(c_sec_fb)
         if not g:
-            ap = c.split('_')[0]
+            ap = c_sec_fb.split('_')[0]
             g_cand = mapa_gg_apellido.get(ap)
             if g_cand and g_cand.get("Media") == "??":
                 g = g_cand
@@ -565,11 +602,11 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
         p_gg = 0
         enlace_gg = ""
         tipo_gg = ""
-        if g:
+        if g and g.get("Enlace_GG", "") not in claves_gg_usadas:
             p_gg = int(g.get("Precio_FUTGG", 0))
             enlace_gg = g.get("Enlace_GG", "")
             tipo_gg = str(g.get("Tipo_Carta", "") or "")
-            claves_gg_usadas.add(g.get("Enlace_GG", ""))
+            claves_gg_usadas.add(enlace_gg)
 
         nombre_jug_final = jug["Jugador"]
         if tipo_gg and "TOTW" in tipo_gg.upper() and "TOTW" not in nombre_jug_final.upper() and "IF" not in nombre_jug_final.upper():
@@ -666,20 +703,24 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
         etiqueta_gg = str(g.get("Tipo_Carta", "") or "FUT.GG").strip()
         nombre_gg_full = f"{g['Jugador_GG'].split(' (')[0]} (Media {g['Media']} - {etiqueta_gg})"
 
-        # Si existe precio previo de Futbin en el respaldo histórico para esta clave, lo rescatamos
-        fb_hist_item = respaldo_fb_clave.get(g.get("Clave", ""))
+        # Si existe precio previo de Futbin en el respaldo histórico para esta clave o clave secundaria, lo rescatamos
+        fb_hist_item = respaldo_fb_clave.get(g.get("Clave", "")) or respaldo_fb_clave.get(clave_cruce_apellido_media(nombre_gg_full))
         p_fb_rescatado = int(fb_hist_item["Precio_Actual"]) if fb_hist_item else 0
         p_con_rescatado = int(fb_hist_item.get("Precio_Consola", p_gg)) if fb_hist_item else p_gg
         enlace_fb_rescatado = fb_hist_item["Enlace"] if (fb_hist_item and "futbin.com" in str(fb_hist_item.get("Enlace", ""))) else enlace_gg
 
         if p_fb_rescatado > 0:
-            if p_gg <= p_fb_rescatado:
+            if p_gg < p_fb_rescatado:
                 p_act_gg = p_gg
                 fuente_gg = "GG"
                 enlace_opt_gg = enlace_gg
-            else:
+            elif p_fb_rescatado < p_gg:
                 p_act_gg = p_fb_rescatado
                 fuente_gg = "FB"
+                enlace_opt_gg = enlace_fb_rescatado
+            else:
+                p_act_gg = p_gg
+                fuente_gg = "FB=GG"
                 enlace_opt_gg = enlace_fb_rescatado
         else:
             p_act_gg = p_gg
@@ -822,7 +863,8 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
         if hrs >= HORAS_TOPE_INMOVILIZACION:
             cartas_estancadas += 1
 
-        match = next((j for j in (datos_recientes or []) if j_nom in sin_tildes(j.get("Jugador", "")).lower()), None)
+        cands_m = [j for j in (datos_recientes or []) if j_nom in sin_tildes(j.get("Jugador", "")).lower()]
+        match = min(cands_m, key=lambda j: abs(int(j.get("Precio_Actual", 0)) - p_pag)) if cands_m else None
         if match:
             p_ref = max(int(match.get("Precio_Actual", 0)), int(match.get("Precio_Futbin", 0)), int(match.get("Precio_FUTGG", 0)))
             vnr_carta = int(round(p_ref * 0.95)) if p_ref > 0 else int(round(p_pag * 0.95))
@@ -1155,7 +1197,9 @@ def armar_texto_cartera(df_cartera, datos_finales):
         dias_hold = round(horas_hold / 24.0, 1)
         str_tiempo = f"{int(horas_hold)}h" if horas_hold < 48 else f"{dias_hold}d"
 
-        match = next((j for j in (datos_finales or []) if jug_comprado in j['Jugador'].lower()), None)
+        jug_norm = sin_tildes(jug_comprado).lower()
+        cands_c = [j for j in (datos_finales or []) if jug_norm in sin_tildes(j.get('Jugador', '')).lower()]
+        match = min(cands_c, key=lambda j: abs(int(j.get('Precio_Actual', 0)) - precio_pagado)) if cands_c else None
         if match:
             p_fb = int(match.get('Precio_Futbin', 0))
             p_gg = int(match.get('Precio_FUTGG', 0))
@@ -1454,6 +1498,9 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
                     media = cand_m
                     break
 
+            if media == "??" or valor_gg == 36000 and media == "??":
+                continue
+
             tipo_carta_gg = detectar_tipo_carta_gg(texto, clases_box, es_pase_totw=False)
             vistos_gg.add(href_limpio)
             nuevos_en_pagina += 1
@@ -1503,8 +1550,8 @@ def cruzar_futbin_futgg(datos_unificados, datos_futgg):
             ganancia_potencial = round((mayor * 0.95) - menor)
             if ganancia_potencial >= 250:
                 vistos_cruce.add(id_unico)
-                c = clave_cruce(f["Jugador"])
-                media_mostrar = c.split('_')[1]
+                m_med = re.search(r'Media\s*(\d{2})', str(f.get("Jugador", "")))
+                media_mostrar = m_med.group(1) if m_med else "00"
                 desfases.append({
                     "Jugador": f["Jugador"].split(" (")[0] + f" (Media {media_mostrar})",
                     "Precio_Futbin": p_fb,
