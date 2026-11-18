@@ -270,9 +270,22 @@ DEFAULT_TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", _T_PART1 + _T_PART2)
 DEFAULT_TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "7676084666")
 ARCHIVO_REGISTRO_CLUBES = "clubes_fc27_registro.json"
 
+ARCHIVO_INTRANSF_ADMIN = "intransferibles_admin.json"
+
 def slug_club_seguro(nombre_club):
     s = re.sub(r"[^a-zA-Z0-9]+", "_", str(nombre_club).strip().lower()).strip("_")
     return s or "club"
+
+def obtener_cliente_gspread():
+    try:
+        import gspread
+        if os.path.exists(ARCHIVO_CRED):
+            return gspread.service_account(filename=ARCHIVO_CRED)
+        if "gcp_service_account" in st.secrets:
+            return gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
+    except Exception:
+        pass
+    return None
 
 def cargar_registro_clubes():
     if os.path.exists(ARCHIVO_REGISTRO_CLUBES):
@@ -285,19 +298,236 @@ def cargar_registro_clubes():
             pass
     return {}
 
+def sincronizar_clubes_cloud_sheet():
+    try:
+        reg = cargar_registro_clubes()
+        filas_cloud = []
+        # Incluir respaldo de saldos e intransferibles del Admin
+        saldos_adm = {}
+        if os.path.exists(ARCHIVO_SALDOS_LOCAL):
+            try:
+                with open(ARCHIVO_SALDOS_LOCAL, "r", encoding="utf-8") as f:
+                    saldos_adm = json.load(f)
+            except Exception:
+                pass
+        intr_adm = {}
+        if os.path.exists(ARCHIVO_INTRANSF_ADMIN):
+            try:
+                with open(ARCHIVO_INTRANSF_ADMIN, "r", encoding="utf-8") as f:
+                    intr_adm = json.load(f)
+            except Exception:
+                pass
+        filas_cloud.append({
+            "Slug_Club": "__admin__",
+            "Nombre_Club": "👑 Club Admin Principal",
+            "PIN": "",
+            "Creado": "",
+            "Saldos_JSON": json.dumps(saldos_adm, ensure_ascii=False),
+            "Intransferibles_JSON": json.dumps(intr_adm, ensure_ascii=False),
+            "Cartera_JSON": "[]",
+            "Alertas_JSON": "[]"
+        })
+
+        for slug_k, info_k in reg.items():
+            saldos_c = {}
+            if os.path.exists(f"saldos_club_{slug_k}.json"):
+                try:
+                    with open(f"saldos_club_{slug_k}.json", "r", encoding="utf-8") as f:
+                        saldos_c = json.load(f)
+                except Exception:
+                    pass
+            intr_c = {}
+            if os.path.exists(f"intransferibles_club_{slug_k}.json"):
+                try:
+                    with open(f"intransferibles_club_{slug_k}.json", "r", encoding="utf-8") as f:
+                        intr_c = json.load(f)
+                except Exception:
+                    pass
+            cartera_c = []
+            if os.path.exists(f"cartera_club_{slug_k}.csv"):
+                try:
+                    cartera_c = pd.read_csv(f"cartera_club_{slug_k}.csv").fillna("").to_dict(orient="records")
+                except Exception:
+                    pass
+            alertas_c = []
+            if os.path.exists(f"alertas_club_{slug_k}.csv"):
+                try:
+                    alertas_c = pd.read_csv(f"alertas_club_{slug_k}.csv").fillna("").to_dict(orient="records")
+                except Exception:
+                    pass
+            filas_cloud.append({
+                "Slug_Club": slug_k,
+                "Nombre_Club": str(info_k.get("nombre", slug_k)),
+                "PIN": str(info_k.get("pin", "")),
+                "Creado": str(info_k.get("creado", "")),
+                "Saldos_JSON": json.dumps(saldos_c, ensure_ascii=False),
+                "Intransferibles_JSON": json.dumps(intr_c, ensure_ascii=False),
+                "Cartera_JSON": json.dumps(cartera_c, ensure_ascii=False),
+                "Alertas_JSON": json.dumps(alertas_c, ensure_ascii=False)
+            })
+
+        df_cloud = pd.DataFrame(filas_cloud)
+        gc = obtener_cliente_gspread()
+        if gc is not None:
+            try:
+                sh = gc.open(NOMBRE_SHEET)
+                try:
+                    ws = sh.worksheet("Clubes_Cloud")
+                    ws.clear()
+                except Exception:
+                    ws = sh.add_worksheet(title="Clubes_Cloud", rows="200", cols="12")
+                df_clean = df_cloud.fillna("")
+                ws.update([df_clean.columns.values.tolist()] + df_clean.astype(str).values.tolist())
+            except Exception:
+                pass
+        if os.path.exists(ARCHIVO_EXCEL):
+            try:
+                with pd.ExcelWriter(ARCHIVO_EXCEL, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+                    df_cloud.to_excel(writer, index=False, sheet_name="Clubes_Cloud")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def hidratar_clubes_desde_cloud(df_cloud):
+    if df_cloud is None or df_cloud.empty or "Slug_Club" not in df_cloud.columns:
+        return
+    reg_local = cargar_registro_clubes()
+    cambio_reg = False
+    for _, row in df_cloud.iterrows():
+        slug_k = str(row.get("Slug_Club", "")).strip()
+        if not slug_k:
+            continue
+        if slug_k == "__admin__":
+            if not os.path.exists(ARCHIVO_INTRANSF_ADMIN):
+                try:
+                    intr_d = json.loads(str(row.get("Intransferibles_JSON", "{}")))
+                    if isinstance(intr_d, dict) and intr_d:
+                        with open(ARCHIVO_INTRANSF_ADMIN, "w", encoding="utf-8") as f:
+                            json.dump(intr_d, f)
+                except Exception:
+                    pass
+            continue
+
+        if slug_k not in reg_local:
+            reg_local[slug_k] = {
+                "nombre": str(row.get("Nombre_Club", slug_k)),
+                "pin": str(row.get("PIN", "")),
+                "creado": str(row.get("Creado", ""))
+            }
+            cambio_reg = True
+
+        arch_c = f"cartera_club_{slug_k}.csv"
+        if not os.path.exists(arch_c):
+            try:
+                c_list = json.loads(str(row.get("Cartera_JSON", "[]")))
+                if isinstance(c_list, list) and c_list:
+                    pd.DataFrame(c_list).to_csv(arch_c, index=False)
+            except Exception:
+                pass
+        arch_a = f"alertas_club_{slug_k}.csv"
+        if not os.path.exists(arch_a):
+            try:
+                a_list = json.loads(str(row.get("Alertas_JSON", "[]")))
+                if isinstance(a_list, list) and a_list:
+                    pd.DataFrame(a_list).to_csv(arch_a, index=False)
+            except Exception:
+                pass
+        arch_s = f"saldos_club_{slug_k}.json"
+        if not os.path.exists(arch_s):
+            try:
+                s_dict = json.loads(str(row.get("Saldos_JSON", "{}")))
+                if isinstance(s_dict, dict) and s_dict:
+                    with open(arch_s, "w", encoding="utf-8") as f:
+                        json.dump(s_dict, f)
+            except Exception:
+                pass
+        arch_i = f"intransferibles_club_{slug_k}.json"
+        if not os.path.exists(arch_i):
+            try:
+                i_dict = json.loads(str(row.get("Intransferibles_JSON", "{}")))
+                if isinstance(i_dict, dict) and i_dict:
+                    with open(arch_i, "w", encoding="utf-8") as f:
+                        json.dump(i_dict, f)
+            except Exception:
+                pass
+    if cambio_reg:
+        try:
+            with open(ARCHIVO_REGISTRO_CLUBES, "w", encoding="utf-8") as f:
+                json.dump(reg_local, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
 def guardar_registro_clubes(reg):
     try:
         with open(ARCHIVO_REGISTRO_CLUBES, "w", encoding="utf-8") as f:
             json.dump(reg, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+    sincronizar_clubes_cloud_sheet()
+
+def cargar_intransferibles_club(es_admin, slug_club=None):
+    defecto = {"83": 0, "84": 0, "85": 0, "86": 0, "87": 0, "88": 0, "89": 0, "IF": 0}
+    if slug_club and not es_admin:
+        k_ss = f"intr_club_{slug_club}"
+        if k_ss in st.session_state:
+            return st.session_state[k_ss]
+        arch_i = f"intransferibles_club_{slug_club}.json"
+        if os.path.exists(arch_i):
+            try:
+                with open(arch_i, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                    defecto.update({str(k): int(v) for k, v in d.items()})
+            except Exception:
+                pass
+        st.session_state[k_ss] = defecto
+        return defecto
+    if not es_admin:
+        return st.session_state.get("guest_intransferibles", defecto)
+    if "admin_intransferibles" in st.session_state:
+        return st.session_state["admin_intransferibles"]
+    if os.path.exists(ARCHIVO_INTRANSF_ADMIN):
+        try:
+            with open(ARCHIVO_INTRANSF_ADMIN, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                defecto.update({str(k): int(v) for k, v in d.items()})
+        except Exception:
+            pass
+    st.session_state["admin_intransferibles"] = defecto
+    return defecto
+
+def guardar_intransferibles_club(datos_intr, es_admin, slug_club=None):
+    limpio = {str(k): int(v) for k, v in datos_intr.items()}
+    if slug_club and not es_admin:
+        st.session_state[f"intr_club_{slug_club}"] = limpio
+        try:
+            with open(f"intransferibles_club_{slug_club}.json", "w", encoding="utf-8") as f:
+                json.dump(limpio, f)
+        except Exception:
+            pass
+        sincronizar_clubes_cloud_sheet()
+        return
+    if not es_admin:
+        st.session_state["guest_intransferibles"] = limpio
+        return
+    st.session_state["admin_intransferibles"] = limpio
+    try:
+        with open(ARCHIVO_INTRANSF_ADMIN, "w", encoding="utf-8") as f:
+            json.dump(limpio, f)
+    except Exception:
+        pass
+    sincronizar_clubes_cloud_sheet()
 
 def enviar_aviso_telegram_web(mensaje):
     try:
         url = f"https://api.telegram.org/bot{DEFAULT_TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": DEFAULT_TELEGRAM_CHAT_ID, "text": mensaje, "parse_mode": "Markdown"}, timeout=6)
+        r = requests.post(url, data={"chat_id": DEFAULT_TELEGRAM_CHAT_ID, "text": mensaje, "parse_mode": "HTML"}, timeout=6)
+        if r.status_code == 200:
+            return True
+        r2 = requests.post(url, data={"chat_id": DEFAULT_TELEGRAM_CHAT_ID, "text": re.sub(r"<[^>]+>", "", str(mensaje))}, timeout=6)
+        return r2.status_code == 200
     except Exception:
-        pass
+        return False
 
 def cargar_saldos_personalizados(es_admin, presupuesto_base, cap_auto_cartera, slug_club=None):
     defecto = {
@@ -341,6 +571,7 @@ def guardar_saldos_personalizados(nuevos_saldos, es_admin, slug_club=None):
                 json.dump(nuevos_saldos, f)
         except Exception:
             pass
+        sincronizar_clubes_cloud_sheet()
         return
     if not es_admin:
         st.session_state["guest_saldos"] = nuevos_saldos
@@ -351,6 +582,7 @@ def guardar_saldos_personalizados(nuevos_saldos, es_admin, slug_club=None):
             json.dump(nuevos_saldos, f)
     except Exception:
         pass
+    sincronizar_clubes_cloud_sheet()
 
 def generar_excel_contable_bytes(df_er, df_viva, df_vendidos):
     output = io.BytesIO()
@@ -402,6 +634,54 @@ def calcular_countdown_pais(nombre_pais_sel):
     horas, rem = divmod(int(resta.total_seconds()), 3600)
     minutos, _ = divmod(rem, 60)
     return f"{horas:02d}h {minutos:02d}m", estado_drop, f"{hora_drop_local:02d}:00 hs"
+
+def calcular_semaforo_y_calendario_ea(df_corte):
+    ahora = ahora_arg()
+    dias_sem = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    dia_idx = ahora.weekday()
+    dia_nom = dias_sem[dia_idx]
+    hora_actual = ahora.hour
+
+    pautas_calendario = {
+        0: ("📉 Lunes Post-FUT Champions (Sell-Off)", "Liquidación de equipos terminada. Excelente ventana para comprar cartas Meta en piso; rebotan miércoles/jueves."),
+        1: ("🔄 Martes de Transición & Pre-TOTW", "Mercado selectivo. Priorizá Flipping por puja (+10% ROI), Lazy Listing (+12%) y acumular TOTW salientes en piso."),
+        2: ("📈 Miércoles Pre-Rivals & Hype TOTW", "Crece la demanda competitiva. Mantené (Hold) cartas Meta compradas el lunes y vendelas hacia el jueves."),
+        3: ("🎁 Jueves de Recompensas Rivals & Marquesinas", "Sobres por la mañana (pánico de compra) e inyección de monedas a la tarde (vender Meta con recargo Lazy)."),
+        4: ("🔥 Viernes de Nueva Promo (15:00 ARG) & Arranque WL", "No compres Meta antes de las 14:30. Entrá fuerte en el pánico de sobres de las 15:05 a 16:00 hs ARG."),
+        5: ("⚡ Sábado de Pico Jugable FUT Champions", "Máxima demanda de Lazy Buyers armando plantilla. Priorizá listar tu stock activo a 1 hora (+12%)."),
+        6: ("🧹 Domingo de Liquidación & Piso Fodder", "Sell-off nocturno de equipos WL. Pasá a liquidez tus cartas Meta caras y acumulá Fodder 85-88 en piso.")
+    }
+    titulo_cal, detalle_cal = pautas_calendario.get(dia_idx, ("📅 Ciclo Semanal EA FC 27", "Operar por puja y listar Lazy a 1h."))
+    if hora_actual == 14:
+        detalle_cal = "🚨 ¡FALTA MENOS DE 1 HORA PARA EL DROP (15:00 ARG)! Prepará liquidez para cazar pánico de sobres."
+    elif hora_actual == 15:
+        detalle_cal = "🔥 ¡DROP RECIÉN LANZADO! Máxima volatilidad: snipeá cartas en caída por sobres y vendé medias pedidas en SBC."
+
+    var_prom = 0.0
+    pct_en_piso = 0.0
+    if df_corte is not None and not df_corte.empty:
+        if "Variacion_Bruta_%" in df_corte.columns:
+            s_var = pd.to_numeric(df_corte["Variacion_Bruta_%"], errors="coerce").dropna()
+            if not s_var.empty:
+                var_prom = round(float(s_var.mean()), 2)
+        if "Estado_Historico" in df_corte.columns:
+            en_piso = df_corte["Estado_Historico"].astype(str).str.contains("💎|🟢", na=False).sum()
+            pct_en_piso = round((en_piso / max(1, len(df_corte))) * 100.0, 1)
+
+    if var_prom <= -3.0 or pct_en_piso >= 32.0:
+        tit_sem = f"🟢 MERCADO EN PISO / ZONA DE COMPRA (Var: {var_prom:+.1f}% | {pct_en_piso}% en soporte)"
+        det_sem = "Alta presión vendedora o pánico de sobres. Momento ideal para acumular en puja y cazar gangas."
+        col_sem = "#00e676"
+    elif var_prom >= 3.5:
+        tit_sem = f"🔴 MERCADO INFLADO / TOMA DE GANANCIAS (Var: {var_prom:+.1f}%)"
+        det_sem = "Precios impulsados al alza. Priorizá vender tu stock activo y evitá sobrepagar en compra inmediata."
+        col_sem = "#ff5252"
+    else:
+        tit_sem = f"🟡 MERCADO ESTABLE / IDEAL FLIPPING & LAZY (Var: {var_prom:+.1f}% | {pct_en_piso}% en piso)"
+        det_sem = f"Flujo equilibrado en {dia_nom}. Comprá por puja (+10% ROI) o arbitraje FB/GG y listá Lazy a 1h (+12%)."
+        col_sem = "#ffd600"
+
+    return tit_sem, det_sem, col_sem, titulo_cal, detalle_cal
 
 def num_seguro(val, defecto=0):
     try:
@@ -731,7 +1011,7 @@ def cargar_por_id_publico(sheet_id):
     nombres_hojas = [
         "Historial_Tendencias", "Mi_Cartera", "Recomendacion_IA",
         "Dashboard_Financiero", "Radar_Fodder", "Arbitraje_FUTGG",
-        "Radar_Evos", "Radar_TOTW", "Radar_Links_Domino", "Mis_Alertas"
+        "Radar_Evos", "Radar_TOTW", "Radar_Links_Domino", "Mis_Alertas", "Clubes_Cloud"
     ]
     df_base_comparacion = None
 
@@ -750,6 +1030,8 @@ def cargar_por_id_publico(sheet_id):
                     and len(df_h) == len(df_base_comparacion)
                 ):
                     hojas[h] = pd.DataFrame()
+                elif h == "Clubes_Cloud":
+                    hojas[h] = df_h
                 else:
                     hojas[h] = convertir_columnas_numericas(df_h)
         except Exception:
@@ -769,6 +1051,7 @@ def guardar_hoja_sincronizada(df_guardar, nombre_hoja, es_admin=False, slug_club
                 df_guardar.to_csv(f"alertas_club_{slug_club}.csv", index=False)
         except Exception:
             pass
+        sincronizar_clubes_cloud_sheet()
         return
 
     if not es_admin:
@@ -786,10 +1069,9 @@ def guardar_hoja_sincronizada(df_guardar, nombre_hoja, es_admin=False, slug_club
     except Exception:
         pass
 
-    if os.path.exists(ARCHIVO_CRED):
+    gc = obtener_cliente_gspread()
+    if gc is not None:
         try:
-            import gspread
-            gc = gspread.service_account(filename=ARCHIVO_CRED)
             sh = gc.open(NOMBRE_SHEET)
             try:
                 ws = sh.worksheet(nombre_hoja)
@@ -844,6 +1126,7 @@ try:
             if tiene_padron_valido and (not datos or fecha_excel >= fecha_sheet):
                 cartera_respaldo = datos.get("Mi_Cartera", pd.DataFrame()) if datos else pd.DataFrame()
                 alertas_respaldo = datos.get("Mis_Alertas", pd.DataFrame()) if datos else pd.DataFrame()
+                clubes_cloud_resp = datos.get("Clubes_Cloud", pd.DataFrame()) if datos else pd.DataFrame()
                 datos["Historial_Tendencias"] = df_hist_excel
                 for h in [
                     "Recomendacion_IA", "Dashboard_Financiero",
@@ -854,6 +1137,13 @@ try:
                     except Exception:
                         if h not in datos:
                             datos[h] = pd.DataFrame()
+                if not clubes_cloud_resp.empty:
+                    datos["Clubes_Cloud"] = clubes_cloud_resp
+                else:
+                    try:
+                        datos["Clubes_Cloud"] = pd.read_excel(ARCHIVO_EXCEL, sheet_name="Clubes_Cloud")
+                    except Exception:
+                        datos["Clubes_Cloud"] = pd.DataFrame()
                 if not cartera_respaldo.empty:
                     datos["Mi_Cartera"] = cartera_respaldo
                 elif "Mi_Cartera" not in datos or datos["Mi_Cartera"].empty:
@@ -871,6 +1161,9 @@ try:
                 estado_conexion = "☁️ Conectado a Nube 24/7 (GitHub Auto-Sync + Sheets)"
         except Exception:
             pass
+
+    if datos and "Clubes_Cloud" in datos and not datos["Clubes_Cloud"].empty:
+        hidratar_clubes_desde_cloud(datos["Clubes_Cloud"])
 
     # ==========================================
     # BARRA LATERAL COMPLETA Y PERSONALIZABLE
@@ -945,9 +1238,9 @@ try:
                             "pin": nuevo_pin_club.strip(),
                             "creado": ahora_arg().strftime("%Y-%m-%d %H:%M")
                         }
-                        guardar_registro_clubes(reg_clubes)
                         pd.DataFrame(columns=columnas_base_cartera).to_csv(f"cartera_club_{s_new}.csv", index=False)
-                        st.success(f"🎉 ¡Club '{nuevo_nom_club.strip()}' creado! Entrá desde la pestaña '🔑 Entrar'.")
+                        guardar_registro_clubes(reg_clubes)
+                        st.success(f"🎉 ¡Club '{nuevo_nom_club.strip()}' creado y sincronizado! Entrá desde '🔑 Entrar'.")
                         st.rerun()
         else:
             st.markdown('<div class="mode-badge-guest">👤 Modo Invitado (Tu Propia Cartera)</div>', unsafe_allow_html=True)
@@ -1109,7 +1402,7 @@ try:
                 st.success(f"¡{cant_c}x {jug_c.title()} agregado a Cartera!")
                 st.rerun()
 
-        # 5. CERRAR / CORREGIR VENTA
+        # 5. CERRAR / CORREGIR VENTA (SOPORTA VENTA PARCIAL O TOTAL DE LOTES)
         st.markdown("---")
         st.markdown("### 💰 Cerrar / Corregir Venta")
         df_cartera_sb = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
@@ -1130,37 +1423,58 @@ try:
                     for idx, r in activos_sb.iterrows()
                 ]
                 seleccion_v = st.selectbox("Carta / Lote a Vender", opciones_v)
+                cant_v_sb = st.number_input("Cantidad Vendida (Permite Venta Parcial)", min_value=1, max_value=100, step=1, value=1)
                 precio_v = st.number_input("Precio de Venta Unitario Bruto", min_value=200, max_value=15000000, step=250, value=15000)
                 btn_vender = st.form_submit_button("📈 Registrar Venta (5% Tax)", use_container_width=True)
 
                 if btn_vender:
                     idx_real = int(seleccion_v.split(" | ")[0])
                     cant_lote = max(1, num_seguro(df_cartera_sb.loc[idx_real, "Cantidad"], 1))
+                    cant_liq_sb = min(int(cant_v_sb), int(cant_lote))
                     p_comp_unit = float(num_seguro(df_cartera_sb.loc[idx_real, "Precio_Pagado"], 0))
-                    venta_bruta_lote = int(precio_v * cant_lote)
-                    costo_lote = int(p_comp_unit * cant_lote)
+                    venta_bruta_lote = int(precio_v * cant_liq_sb)
+                    costo_lote = int(p_comp_unit * cant_liq_sb)
                     tax = int(round(venta_bruta_lote * 0.05))
                     neto = int(round((venta_bruta_lote - tax) - costo_lote))
                     roi = round((neto / costo_lote) * 100, 2) if costo_lote > 0 else 0.0
+                    ahora_v_str = ahora_arg().strftime("%Y-%m-%d %H:%M")
 
                     df_cartera_sb["Estado"] = df_cartera_sb["Estado"].astype(object)
                     if "Fecha_Venta" not in df_cartera_sb.columns:
                         df_cartera_sb["Fecha_Venta"] = ""
                     df_cartera_sb["Fecha_Venta"] = df_cartera_sb["Fecha_Venta"].astype(object)
 
-                    df_cartera_sb.loc[idx_real, "Estado"] = "Vendido"
-                    df_cartera_sb.loc[idx_real, "Precio_Venta"] = int(precio_v)
-                    df_cartera_sb.loc[idx_real, "Costo_EA_Tax"] = tax
-                    df_cartera_sb.loc[idx_real, "Ganancia_Neta"] = neto
-                    df_cartera_sb.loc[idx_real, "ROI_%"] = roi
-                    df_cartera_sb.loc[idx_real, "Fecha_Venta"] = ahora_arg().strftime("%Y-%m-%d %H:%M")
+                    if cant_liq_sb < cant_lote and str(df_cartera_sb.loc[idx_real, "Estado"]).strip() == "Activo":
+                        df_cartera_sb.loc[idx_real, "Cantidad"] = int(cant_lote - cant_liq_sb)
+                        fila_vendida_parcial = pd.DataFrame([{
+                            "Jugador_Exacto": str(df_cartera_sb.loc[idx_real, "Jugador_Exacto"]),
+                            "Estrategia": str(df_cartera_sb.loc[idx_real, "Estrategia"]),
+                            "Cantidad": int(cant_liq_sb),
+                            "Precio_Pagado": int(p_comp_unit),
+                            "Estado": "Vendido",
+                            "Precio_Venta": int(precio_v),
+                            "Costo_EA_Tax": tax,
+                            "Ganancia_Neta": neto,
+                            "ROI_%": roi,
+                            "Fecha_Compra": str(df_cartera_sb.loc[idx_real, "Fecha_Compra"]),
+                            "Fecha_Venta": ahora_v_str
+                        }])
+                        df_cartera_sb = pd.concat([df_cartera_sb, fila_vendida_parcial], ignore_index=True)
+                    else:
+                        df_cartera_sb.loc[idx_real, "Cantidad"] = int(cant_liq_sb)
+                        df_cartera_sb.loc[idx_real, "Estado"] = "Vendido"
+                        df_cartera_sb.loc[idx_real, "Precio_Venta"] = int(precio_v)
+                        df_cartera_sb.loc[idx_real, "Costo_EA_Tax"] = tax
+                        df_cartera_sb.loc[idx_real, "Ganancia_Neta"] = neto
+                        df_cartera_sb.loc[idx_real, "ROI_%"] = roi
+                        df_cartera_sb.loc[idx_real, "Fecha_Venta"] = ahora_v_str
 
                     guardar_hoja_sincronizada(df_cartera_sb, "Mi_Cartera", es_admin=es_admin, slug_club=slug_club_activo)
                     saldos_tmp = cargar_saldos_personalizados(es_admin, presupuesto_usuario, 0, slug_club=slug_club_activo)
                     if saldos_tmp.get("modo_liquidez") == "Manual":
                         saldos_tmp["liquidez_manual"] = max(0, int(saldos_tmp.get("liquidez_manual", 0)) + int(venta_bruta_lote - tax))
                         guardar_saldos_personalizados(saldos_tmp, es_admin, slug_club=slug_club_activo)
-                    st.success(f"¡Venta registrada! Neto Lote ({cant_lote}x): {neto:+,} mnds")
+                    st.success(f"¡Venta registrada ({cant_liq_sb}x)! Neto: {neto:+,} mnds")
                     st.rerun()
         else:
             st.caption("No tenés cartas pendientes de venta.")
@@ -1189,7 +1503,7 @@ try:
                     st.rerun()
 
     # ==========================================
-    # CABECERA PRINCIPAL + RELOJ ADAPTADO AL PAÍS
+    # CABECERA PRINCIPAL + RELOJ ADAPTADO AL PAÍS + SEMÁFORO DE TEMPERATURA Y CALENDARIO EA
     # ==========================================
     df_historial = datos.get("Historial_Tendencias", pd.DataFrame())
     ultima_act = str(df_historial["Fecha"].max()) if not df_historial.empty and "Fecha" in df_historial.columns else "Sin escaneo"
@@ -1214,6 +1528,7 @@ try:
 
     tiempo_drop, leyenda_drop, hora_drop_txt = calcular_countdown_pais(pais_usuario)
     etiqueta_plat = "🎮 Consola" if usar_consola else "🖥️ PC"
+    tit_sem, det_sem, col_sem, tit_cal, det_cal = calcular_semaforo_y_calendario_ea(df_ult_corte)
 
     st.markdown(f"""
     <div class="main-header">
@@ -1229,6 +1544,22 @@ try:
     </div>
     """, unsafe_allow_html=True)
 
+    c_sem1, c_sem2 = st.columns(2)
+    with c_sem1:
+        st.markdown(
+            f'<div style="background:rgba(17,22,37,0.85);border-left:5px solid {col_sem};padding:11px 15px;border-radius:10px;margin-bottom:14px;">'
+            f'<div style="font-weight:900;font-size:0.95rem;color:{col_sem};">🌡️ {tit_sem}</div>'
+            f'<div style="font-size:0.84rem;color:#d0d7de;margin-top:3px;">{det_sem}</div></div>',
+            unsafe_allow_html=True
+        )
+    with c_sem2:
+        st.markdown(
+            f'<div style="background:rgba(17,22,37,0.85);border-left:5px solid #00e5ff;padding:11px 15px;border-radius:10px;margin-bottom:14px;">'
+            f'<div style="font-weight:900;font-size:0.95rem;color:#00e5ff;">{tit_cal}</div>'
+            f'<div style="font-size:0.84rem;color:#d0d7de;margin-top:3px;">{det_cal}</div></div>',
+            unsafe_allow_html=True
+        )
+
     if not datos:
         if msg_error and msg_error != "OK":
             st.error(f"🔍 {msg_error}")
@@ -1242,13 +1573,16 @@ try:
         st.stop()
 
     # ==========================================
-    # DETECTOR VISUAL Y SONORO DE ALERTAS SNIPER EN VIVO
+    # DETECTOR VISUAL, SONORO, TELEGRAM AUTO Y COMPRA 1-CLIC DE ALERTAS SNIPER EN VIVO
     # ==========================================
+    if "snipers_notificados_tg" not in st.session_state:
+        st.session_state["snipers_notificados_tg"] = set()
+
     df_alertas_check = datos.get("Mis_Alertas", pd.DataFrame(columns=columnas_base_alertas)).copy()
     if not df_alertas_check.empty and "Estado" in df_alertas_check.columns and not df_ult_corte.empty:
         act_snipers = df_alertas_check[df_alertas_check["Estado"].astype(str).str.strip() == "Activa"]
         disparos_sniper = []
-        for _, r_sn in act_snipers.iterrows():
+        for idx_sn, r_sn in act_snipers.iterrows():
             j_b = str(r_sn.get("Jugador_Buscado", "")).strip()
             p_obj = num_seguro(r_sn.get("Precio_Objetivo", 0))
             if j_b and p_obj > 0:
@@ -1258,7 +1592,9 @@ try:
                     p_actual_sn = num_seguro(mejor_fila.get("Precio_Actual", 0))
                     if 0 < p_actual_sn <= p_obj:
                         disparos_sniper.append((
+                            idx_sn,
                             str(mejor_fila["Jugador"]).split(" (")[0],
+                            str(mejor_fila["Jugador"]),
                             p_actual_sn,
                             p_obj,
                             str(mejor_fila.get("Fuente_Mejor_Precio", "PC")),
@@ -1267,11 +1603,48 @@ try:
         if disparos_sniper:
             if alerta_sonora:
                 reproducir_sonido_sniper()
+            nuevos_avisos_tg = []
+            for idx_sn, nom_s, _, p_s, obj_s, f_s, lnk_s in disparos_sniper:
+                clave_notif = f"{nombre_club_activo}|{nom_s}|{p_s}|{obj_s}"
+                if clave_notif not in st.session_state["snipers_notificados_tg"]:
+                    st.session_state["snipers_notificados_tg"].add(clave_notif)
+                    nuevos_avisos_tg.append(f"🎯 <b>{nom_s}</b> cayó a <b>{p_s:,} mnds</b> [{f_s}] (Objetivo: &lt;= {obj_s:,} mnds)")
+            if nuevos_avisos_tg:
+                enviar_aviso_telegram_web(
+                    f"🚨 <b>¡DISPARO SNIPER EN VIVO ({nombre_club_activo})!</b>\n" + "\n".join(nuevos_avisos_tg)
+                )
+
             items_html = "<br>".join([
                 f"🎯 <b>{nom_s}</b> cayó a <span style='color:#00e676;font-weight:900;'>{p_s:,} mnds</span> [{f_s}] (Tu objetivo: <= {obj_s:,} mnds) — <a href='{lnk_s}' target='_blank' style='color:#ffea00;'>Abrir Carta</a>"
-                for nom_s, p_s, obj_s, f_s, lnk_s in disparos_sniper
+                for _, nom_s, _, p_s, obj_s, f_s, lnk_s in disparos_sniper
             ])
             st.markdown(f'<div class="sniper-banner">🚨 <b>¡ALERTA SNIPER DETECTADA EN VIVO!</b><br>{items_html}</div>', unsafe_allow_html=True)
+            cols_sn_btn = st.columns(min(4, len(disparos_sniper)))
+            for i_b, (idx_sn, nom_s, nom_full_s, p_s, obj_s, f_s, _) in enumerate(disparos_sniper[:4]):
+                with cols_sn_btn[i_b]:
+                    if st.button(f"🛒 Comprada: {nom_s} ({p_s:,} mnds) ➡️ A Cartera", key=f"btn_sniper_buy_{idx_sn}_{p_s}", use_container_width=True):
+                        df_c_sn = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
+                        if "Cantidad" not in df_c_sn.columns:
+                            df_c_sn["Cantidad"] = 1
+                        nueva_c_sn = pd.DataFrame([{
+                            "Jugador_Exacto": nom_s.strip().title(),
+                            "Estrategia": autodetectar_estrategia(nom_full_s, p_s),
+                            "Cantidad": 1,
+                            "Precio_Pagado": int(p_s),
+                            "Estado": "Activo",
+                            "Precio_Venta": 0,
+                            "Costo_EA_Tax": 0,
+                            "Ganancia_Neta": 0,
+                            "ROI_%": 0.0,
+                            "Fecha_Compra": ahora_arg().strftime("%Y-%m-%d %H:%M"),
+                            "Fecha_Venta": ""
+                        }])
+                        df_c_sn = pd.concat([df_c_sn, nueva_c_sn], ignore_index=True)
+                        guardar_hoja_sincronizada(df_c_sn, "Mi_Cartera", es_admin=es_admin, slug_club=slug_club_activo)
+                        df_alertas_check.loc[idx_sn, "Estado"] = "Cumplida"
+                        guardar_hoja_sincronizada(df_alertas_check, "Mis_Alertas", es_admin=es_admin, slug_club=slug_club_activo)
+                        st.success(f"🎯 ¡{nom_s} sumado a Mi Cartera y alerta marcada como Cumplida!")
+                        st.rerun()
 
     # ==========================================
     # TARJETAS KPI FINANCIERAS + EDITOR EN PÁGINA DE LIQUIDEZ Y CAPITAL INMOVILIZADO
@@ -1391,6 +1764,7 @@ try:
             "ROI_Diario_%": roi_diario,
             "Acción_Sugerida": estado_op,
             "Antigüedad": str_hold,
+            "Cant_Vender": 0,
             "Vendido_A": 0,
             "Link": enlace_a
         })
@@ -1464,7 +1838,7 @@ try:
     ])
 
     with tab1:
-        st.subheader("🎯 Monitoreo de Cartera Activa (Editá Jugador/Cantidad/Costo, tildá '🗑️ Quitar' o escribí en '💸 Vendido_A')")
+        st.subheader("🎯 Monitoreo de Cartera Activa (Editá Jugador/Cantidad/Costo, Venta Parcial de Lotes o Vendido_A)")
 
         # MEJORA 2A: AGREGAR JUGADOR DIRECTAMENTE DESDE LA PÁGINA PRINCIPAL
         with st.expander("➕ Agregar Jugador o Lote Rápido a Mi Cartera desde acá", expanded=False):
@@ -1505,10 +1879,10 @@ try:
                         st.success(f"¡{cant_add_rap}x {nom_add_rap.title()} sumado a tu cartera activa!")
                         st.rerun()
 
-        # MEJORA 2B: TABLA DE CARTERA ACTIVA 100% EDITABLE (EDITAR JUGADOR/CANTIDAD/COSTO, QUITAR O VENDER EN 1 CLIC)
+        # MEJORA 2B: TABLA DE CARTERA ACTIVA 100% EDITABLE CON SOPORTE DE VENTA PARCIAL DE LOTES
         if filas_cartera_viva:
             df_viva = pd.DataFrame(filas_cartera_viva)
-            cols_editables_viva = ["Quitar", "Jugador", "Estrategia", "Cantidad", "Costo_Pagado", "Vendido_A"]
+            cols_editables_viva = ["Quitar", "Jugador", "Estrategia", "Cantidad", "Costo_Pagado", "Cant_Vender", "Vendido_A"]
             cols_deshabilitadas_viva = [c for c in df_viva.columns if c not in cols_editables_viva]
 
             edicion_viva = st.data_editor(
@@ -1531,13 +1905,14 @@ try:
                     "Resultado_Tenencia": st.column_config.NumberColumn("✨ Neto Lote Hoy", format="%+d mnds"),
                     "ROI_Latente_%": st.column_config.NumberColumn("📈 ROI %", format="%+.1f%%"),
                     "ROI_Diario_%": st.column_config.NumberColumn("⚡ ROI/Día", format="%+.1f%%"),
+                    "Cant_Vender": st.column_config.NumberColumn("📤 Cant. Vender", min_value=0, max_value=100, step=1, format="%d", help="Dejalo en 0 para vender el lote entero al cargar Vendido_A, o poné cuántas unidades del lote vendiste."),
                     "Vendido_A": st.column_config.NumberColumn("💸 Vendido_A Unit.", min_value=0, max_value=15000000, step=250, format="%d mnds"),
                     "Link": st.column_config.LinkColumn("🔗 Web", display_text="Abrir Carta")
                 },
                 key="editor_cartera_viva"
             )
 
-            if st.button("💾 Aplicar Cambios en Cartera Activa (Guardar Ediciones / Liquidar Ventas / Quitar Marcadas)", use_container_width=True):
+            if st.button("💾 Aplicar Cambios en Cartera Activa (Guardar Ediciones / Liquidar Ventas Totales o Parciales / Quitar)", use_container_width=True):
                 df_c_upd = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
                 if "Cantidad" not in df_c_upd.columns:
                     df_c_upd["Cantidad"] = 1
@@ -1547,6 +1922,7 @@ try:
                 df_c_upd["Fecha_Venta"] = df_c_upd["Fecha_Venta"].astype(object)
 
                 indices_a_borrar = []
+                filas_parciales_vendidas = []
                 delta_caja = 0
 
                 for _, r_ed in edicion_viva.iterrows():
@@ -1562,6 +1938,7 @@ try:
                     nueva_est = str(r_ed["Estrategia"]).strip()
                     nueva_cant = max(1, int(num_seguro(r_ed.get("Cantidad", 1), 1)))
                     nuevo_costo = int(num_seguro(r_ed["Costo_Pagado"], 0))
+                    cant_vender_ed = int(num_seguro(r_ed.get("Cant_Vender", 0), 0))
                     p_venta_liq = int(num_seguro(r_ed["Vendido_A"], 0))
 
                     df_c_upd.loc[idx_c_orig, "Jugador_Exacto"] = nuevo_nom
@@ -1570,22 +1947,43 @@ try:
                     df_c_upd.loc[idx_c_orig, "Precio_Pagado"] = nuevo_costo
 
                     if p_venta_liq > 0:
-                        vb_lote_liq = p_venta_liq * nueva_cant
-                        ca_lote_liq = nuevo_costo * nueva_cant
+                        cant_efectiva_v = cant_vender_ed if (0 < cant_vender_ed < nueva_cant) else nueva_cant
+                        vb_lote_liq = p_venta_liq * cant_efectiva_v
+                        ca_lote_liq = nuevo_costo * cant_efectiva_v
                         tax_liq = int(round(vb_lote_liq * 0.05))
                         neto_liq = int(round((vb_lote_liq - tax_liq) - ca_lote_liq))
                         roi_liq = round((neto_liq / ca_lote_liq) * 100, 2) if ca_lote_liq > 0 else 0.0
+                        fecha_v_hoy = ahora_arg().strftime("%Y-%m-%d %H:%M")
 
-                        df_c_upd.loc[idx_c_orig, "Estado"] = "Vendido"
-                        df_c_upd.loc[idx_c_orig, "Precio_Venta"] = p_venta_liq
-                        df_c_upd.loc[idx_c_orig, "Costo_EA_Tax"] = tax_liq
-                        df_c_upd.loc[idx_c_orig, "Ganancia_Neta"] = neto_liq
-                        df_c_upd.loc[idx_c_orig, "ROI_%"] = roi_liq
-                        df_c_upd.loc[idx_c_orig, "Fecha_Venta"] = ahora_arg().strftime("%Y-%m-%d %H:%M")
+                        if cant_efectiva_v < nueva_cant:
+                            # Venta parcial de lote: descontar del lote activo y sumar registro vendido
+                            df_c_upd.loc[idx_c_orig, "Cantidad"] = int(nueva_cant - cant_efectiva_v)
+                            filas_parciales_vendidas.append({
+                                "Jugador_Exacto": nuevo_nom,
+                                "Estrategia": nueva_est,
+                                "Cantidad": int(cant_efectiva_v),
+                                "Precio_Pagado": nuevo_costo,
+                                "Estado": "Vendido",
+                                "Precio_Venta": p_venta_liq,
+                                "Costo_EA_Tax": tax_liq,
+                                "Ganancia_Neta": neto_liq,
+                                "ROI_%": roi_liq,
+                                "Fecha_Compra": str(df_c_upd.loc[idx_c_orig, "Fecha_Compra"]),
+                                "Fecha_Venta": fecha_v_hoy
+                            })
+                        else:
+                            df_c_upd.loc[idx_c_orig, "Estado"] = "Vendido"
+                            df_c_upd.loc[idx_c_orig, "Precio_Venta"] = p_venta_liq
+                            df_c_upd.loc[idx_c_orig, "Costo_EA_Tax"] = tax_liq
+                            df_c_upd.loc[idx_c_orig, "Ganancia_Neta"] = neto_liq
+                            df_c_upd.loc[idx_c_orig, "ROI_%"] = roi_liq
+                            df_c_upd.loc[idx_c_orig, "Fecha_Venta"] = fecha_v_hoy
                         delta_caja += (vb_lote_liq - tax_liq)
 
                 if indices_a_borrar:
                     df_c_upd = df_c_upd.drop(index=indices_a_borrar).reset_index(drop=True)
+                if filas_parciales_vendidas:
+                    df_c_upd = pd.concat([df_c_upd, pd.DataFrame(filas_parciales_vendidas)], ignore_index=True)
 
                 guardar_hoja_sincronizada(df_c_upd, "Mi_Cartera", es_admin=es_admin, slug_club=slug_club_activo)
                 if delta_caja != 0 and saldos_cfg.get("modo_liquidez") == "Manual":
@@ -1594,6 +1992,17 @@ try:
 
                 st.success("✅ ¡Cambios aplicados en tu Cartera Activa!")
                 st.rerun()
+
+            with st.expander("📋 Copiar Listado Rápido de Re-Loteo Lazy (Ciclo 1 Hora) y Control de Stock", expanded=False):
+                st.caption("Copiá esta guía rápida para relistar tus cartas cada 1 hora en la Web App / Companion de EA Sports FC 27 respetando los escalones oficiales:")
+                lineas_lazy = [f"🎯 LISTA DE RE-LOTEO LAZY 1H ({nombre_club_activo} | +{lazy_pct}%)"]
+                for r_lz in filas_cartera_viva:
+                    puja_sug_lz = redondear_escalon_ea(r_lz["Precio_Lazy_1h"] * 0.95, hacia_arriba=False)
+                    lineas_lazy.append(
+                        f"• {r_lz['Cantidad']}x {r_lz['Jugador']} (Costo: {r_lz['Costo_Pagado']:,}) ➡️ "
+                        f"Puja Inicial: {puja_sug_lz:,} | Compra Ya (Lazy): {r_lz['Precio_Lazy_1h']:,} | Empate 5%: {r_lz['Empate_5%']:,}"
+                    )
+                st.code("\n".join(lineas_lazy), language="markdown")
         else:
             st.info("No tenés cartas activas en cartera. Podés agregarlas desde el desplegable de arriba, desde la barra lateral o con 1 clic en la pestaña Radar.")
 
@@ -1821,7 +2230,7 @@ try:
                 st.plotly_chart(fig_proy, use_container_width=True)
 
     # ==========================================
-    # PESTAÑA 2: RADAR CON LÍMITE DE PRECIO AMPLIADO HASTA 15,000,000 MNDS
+    # PESTAÑA 2: RADAR CON LÍMITE DE PRECIO AMPLIADO HASTA 15,000,000 MNDS + ARBITRAJE FB vs GG
     # ==========================================
     with tab2:
         st.subheader("🔍 Lupa Visual Histórica (Evolución de Precio, Piso, Promedio y Zona de Puja)")
@@ -1857,25 +2266,62 @@ try:
                 st.plotly_chart(fig_hist, use_container_width=True)
 
         if not df_ult_corte.empty:
-            with st.expander("📲 Copiar Resumen de Gangas para WhatsApp / Discord / Telegram"):
-                df_top_g = df_ult_corte.copy()
-                if "Variacion_Bruta_%" in df_top_g.columns:
-                    df_top_g = df_top_g.sort_values(by="Variacion_Bruta_%").head(5)
-                else:
-                    df_top_g = df_top_g.head(5)
-                lineas_share = [f"⚡ *TOP 5 GANGAS FC27 ({etiqueta_plat} | Corte {ultima_act})* ⚡"]
-                for _, rg in df_top_g.iterrows():
-                    nom_sh = str(rg.get("Jugador", "")).split(" (")[0]
-                    p_sh = num_seguro(rg.get("Precio_Actual", 0))
-                    puja_sh = num_seguro(rg.get("Puja_Max_10%_ROI", 0))
-                    lazy_sh = num_seguro(rg.get("Precio_Lazy_Sugerido", 0))
-                    lineas_share.append(f"• *{nom_sh}*: {p_sh:,} mnds | 🔨 Pujar <= {puja_sh:,} | 🎯 Lazy: {lazy_sh:,}")
-                st.code("\n".join(lineas_share), language="markdown")
+            c_sh1, c_sh2 = st.columns(2)
+            with c_sh1:
+                with st.expander("📲 Copiar Resumen de Gangas para WhatsApp / Discord / Telegram"):
+                    df_top_g = df_ult_corte.copy()
+                    if "Variacion_Bruta_%" in df_top_g.columns:
+                        df_top_g = df_top_g.sort_values(by="Variacion_Bruta_%").head(5)
+                    else:
+                        df_top_g = df_top_g.head(5)
+                    lineas_share = [f"⚡ *TOP 5 GANGAS FC27 ({etiqueta_plat} | Corte {ultima_act})* ⚡"]
+                    for _, rg in df_top_g.iterrows():
+                        nom_sh = str(rg.get("Jugador", "")).split(" (")[0]
+                        p_sh = num_seguro(rg.get("Precio_Actual", 0))
+                        puja_sh = num_seguro(rg.get("Puja_Max_10%_ROI", 0))
+                        lazy_sh = num_seguro(rg.get("Precio_Lazy_Sugerido", 0))
+                        lineas_share.append(f"• *{nom_sh}*: {p_sh:,} mnds | 🔨 Pujar <= {puja_sh:,} | 🎯 Lazy: {lazy_sh:,}")
+                    st.code("\n".join(lineas_share), language="markdown")
+
+            with c_sh2:
+                with st.expander("⚖️ Detector de Arbitraje Real (FB vs GG >= 12%) & 💥 Flash Crashes", expanded=False):
+                    filas_arb = []
+                    for _, r_ar in df_ult_corte.iterrows():
+                        p_fb_a = num_seguro(r_ar.get("Precio_Futbin", 0))
+                        p_gg_a = num_seguro(r_ar.get("Precio_FUTGG", 0))
+                        var_a = float(r_ar.get("Variacion_Bruta_%", 0.0) or 0.0)
+                        if p_fb_a > 0 and p_gg_a > 0:
+                            menor_a = min(p_fb_a, p_gg_a)
+                            mayor_a = max(p_fb_a, p_gg_a)
+                            brecha_pct = round(((mayor_a - menor_a) / max(1, menor_a)) * 100, 1)
+                            neto_arb = int(round(mayor_a * 0.95)) - menor_a
+                            if brecha_pct >= 12.0 and neto_arb > 0:
+                                filas_arb.append({
+                                    "Jugador": r_ar.get("Jugador"),
+                                    "Tipo": "⚖️ Arbitraje FB/GG",
+                                    "Compra_Min": menor_a,
+                                    "Ref_Alta": mayor_a,
+                                    "Brecha_o_Caida": f"+{brecha_pct}% ({neto_arb:+,} netos)",
+                                    "Puja_Sugerida": num_seguro(r_ar.get("Puja_Max_10%_ROI", 0))
+                                })
+                        if var_a <= -15.0:
+                            filas_arb.append({
+                                "Jugador": r_ar.get("Jugador"),
+                                "Tipo": "💥 Flash Crash",
+                                "Compra_Min": num_seguro(r_ar.get("Precio_Actual", 0)),
+                                "Ref_Alta": num_seguro(r_ar.get("Promedio_Hist", 0)),
+                                "Brecha_o_Caida": f"{var_a:+.1f}% vs Prom.",
+                                "Puja_Sugerida": num_seguro(r_ar.get("Puja_Max_10%_ROI", 0))
+                            })
+                    if filas_arb:
+                        st.dataframe(pd.DataFrame(filas_arb).head(25), use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("Sin desarbitrajes >= 12% ni Flash Crashes <= -15% en este corte.")
 
         st.markdown("---")
         st.subheader("⚡ Padrón Dual Interactivo (Límite Desbloqueado hasta 15,000,000 mnds + Compra 1-Clic)")
 
-        # MEJORA 3: FILTRO DE PRECIO MÁXIMO AMPLIADO HASTA 15,000,000 DE MONEDAS
+        # MEJORA 3: FILTRO DE PRECIO MÁXIMO AMPLIADO HASTA 15,000,000 DE MONEDAS + FILTROS ARBITRAJE/CRASH
         c_f1, c_f2, c_f3, c_f4 = st.columns([1.8, 1.4, 1.1, 1.3])
         with c_f1:
             busqueda_jug = st.text_input("🔍 Filtrar por Nombre, Media o Tipo de Carta", placeholder="Ej: 86, TOTW, Mbappe...")
@@ -1887,6 +2333,8 @@ try:
                     "🟢 COMPRAR",
                     "⚡ Flipping Rápido",
                     "💎 Mínimo Histórico",
+                    "⚖️ Arbitraje FB vs GG (Brecha >= 12%)",
+                    "💥 Flash Crash Intradía (Caída <= -15%)",
                     "📦 Out of Packs / Especiales (TOTW & Promos)",
                     "🔴 VENDER",
                     "⚠️ Evitar Cuchillo"
@@ -1917,6 +2365,14 @@ try:
                 df_filtrado = df_filtrado[df_filtrado["Senal_Trading"].astype(str).str.contains("⚡", na=False)]
             elif filtro_accion == "💎 Mínimo Histórico" and "Estado_Historico" in df_filtrado.columns:
                 df_filtrado = df_filtrado[df_filtrado["Estado_Historico"].astype(str).str.contains("💎", na=False)]
+            elif filtro_accion == "⚖️ Arbitraje FB vs GG (Brecha >= 12%)":
+                p_fb_s = df_filtrado["Precio_Futbin"].apply(num_seguro) if "Precio_Futbin" in df_filtrado.columns else pd.Series(0, index=df_filtrado.index)
+                p_gg_s = df_filtrado["Precio_FUTGG"].apply(num_seguro) if "Precio_FUTGG" in df_filtrado.columns else pd.Series(0, index=df_filtrado.index)
+                min_s = np.minimum(p_fb_s, p_gg_s).replace(0, np.nan)
+                max_s = np.maximum(p_fb_s, p_gg_s)
+                df_filtrado = df_filtrado[(p_fb_s > 0) & (p_gg_s > 0) & (((max_s - min_s) / min_s) >= 0.12)]
+            elif filtro_accion == "💥 Flash Crash Intradía (Caída <= -15%)" and "Variacion_Bruta_%" in df_filtrado.columns:
+                df_filtrado = df_filtrado[pd.to_numeric(df_filtrado["Variacion_Bruta_%"], errors="coerce").fillna(0) <= -15.0]
             elif filtro_accion == "📦 Out of Packs / Especiales (TOTW & Promos)":
                 df_filtrado = df_filtrado[df_filtrado["Jugador"].apply(es_carta_especial_oop)]
             elif filtro_accion == "🔴 VENDER" and "Accion" in df_filtrado.columns:
@@ -1980,7 +2436,7 @@ try:
                     st.rerun()
 
     with tab3:
-        # 1. OPTIMIZADOR MATEMÁTICO DE PLANTILLAS SBC CONECTADO AL ALMACÉN DE MEDIAS INTRANSFERIBLES DEL CLUB
+        # 1. OPTIMIZADOR MATEMÁTICO DE PLANTILLAS SBC CONECTADO AL ALMACÉN DE MEDIAS INTRANSFERIBLES DEL CLUB (PERSISTENTE)
         st.subheader("🧩 Optimizador Matemático de Plantillas SBC (Conectado a tu Almacén de Intransferibles)")
         pisos_por_media_default = {83: 900, 84: 1200, 85: 2800, 86: 5500, 87: 9500, 88: 14500, 89: 22000}
         pisos_vivos = {}
@@ -1999,26 +2455,34 @@ try:
                 pisos_vivos[m_val] = p_def_m
                 jug_ref_vivos[m_val] = f"Referencia ({p_def_m:,} mnds)"
 
-        with st.expander("🎒 Almacén de Medias Intransferibles del Club (Descuenta tu stock propio del costo del SBC)", expanded=True):
-            st.caption("Cargá cuántas cartas intransferibles tenés en tu club para cada media; el optimizador las descontará automáticamente de cada receta de 11 cartas:")
-            ci1, ci2, ci3, ci4, ci5, ci6, ci7, ci8 = st.columns(8)
+        intransf_guardados = cargar_intransferibles_club(es_admin, slug_club=slug_club_activo)
+        with st.expander("🎒 Almacén de Medias Intransferibles del Club (Persistente por Club en Cloud/Disco)", expanded=True):
+            st.caption("Cargá cuántas cartas intransferibles tenés en tu club para cada media; el optimizador las descontará automáticamente y podés guardarlas para próximas sesiones:")
+            ci1, ci2, ci3, ci4, ci5, ci6, ci7, ci8, ci9 = st.columns([1, 1, 1, 1, 1, 1, 1, 1, 1.3])
             stock_intransf = {}
             with ci1:
-                stock_intransf[83] = st.number_input("M83 Intr.", min_value=0, max_value=11, value=0, step=1, key="intr_83")
+                stock_intransf[83] = st.number_input("M83 Intr.", min_value=0, max_value=11, value=int(intransf_guardados.get("83", 0)), step=1, key="intr_83")
             with ci2:
-                stock_intransf[84] = st.number_input("M84 Intr.", min_value=0, max_value=11, value=0, step=1, key="intr_84")
+                stock_intransf[84] = st.number_input("M84 Intr.", min_value=0, max_value=11, value=int(intransf_guardados.get("84", 0)), step=1, key="intr_84")
             with ci3:
-                stock_intransf[85] = st.number_input("M85 Intr.", min_value=0, max_value=11, value=0, step=1, key="intr_85")
+                stock_intransf[85] = st.number_input("M85 Intr.", min_value=0, max_value=11, value=int(intransf_guardados.get("85", 0)), step=1, key="intr_85")
             with ci4:
-                stock_intransf[86] = st.number_input("M86 Intr.", min_value=0, max_value=11, value=0, step=1, key="intr_86")
+                stock_intransf[86] = st.number_input("M86 Intr.", min_value=0, max_value=11, value=int(intransf_guardados.get("86", 0)), step=1, key="intr_86")
             with ci5:
-                stock_intransf[87] = st.number_input("M87 Intr.", min_value=0, max_value=11, value=0, step=1, key="intr_87")
+                stock_intransf[87] = st.number_input("M87 Intr.", min_value=0, max_value=11, value=int(intransf_guardados.get("87", 0)), step=1, key="intr_87")
             with ci6:
-                stock_intransf[88] = st.number_input("M88 Intr.", min_value=0, max_value=11, value=0, step=1, key="intr_88")
+                stock_intransf[88] = st.number_input("M88 Intr.", min_value=0, max_value=11, value=int(intransf_guardados.get("88", 0)), step=1, key="intr_88")
             with ci7:
-                stock_intransf[89] = st.number_input("M89 Intr.", min_value=0, max_value=11, value=0, step=1, key="intr_89")
+                stock_intransf[89] = st.number_input("M89 Intr.", min_value=0, max_value=11, value=int(intransf_guardados.get("89", 0)), step=1, key="intr_89")
             with ci8:
-                ifs_intransf = st.number_input("TOTW Intr.", min_value=0, max_value=5, value=0, step=1, key="intr_if")
+                ifs_intransf = st.number_input("TOTW Intr.", min_value=0, max_value=5, value=int(intransf_guardados.get("TOTW", 0)), step=1, key="intr_if")
+            with ci9:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("💾 Guardar Stock", use_container_width=True, key="btn_save_intransf"):
+                    nuevo_stock_intr = {str(k): int(v) for k, v in stock_intransf.items()}
+                    nuevo_stock_intr["TOTW"] = int(ifs_intransf)
+                    guardar_intransferibles_club(nuevo_stock_intr, es_admin, slug_club=slug_club_activo)
+                    st.success("✅ ¡Almacén guardado!")
 
         co1, co2 = st.columns([1, 2])
         with co1:
@@ -2097,7 +2561,7 @@ try:
         )
 
         st.markdown("---")
-        st.subheader("🎯 Gestor Visual de Alertas Sniper (Con Alarma Web Audio + Aviso a Telegram)")
+        st.subheader("🎯 Gestor Visual de Alertas Sniper (Con Alarma Web Audio + Aviso a Telegram + Conversión 1-Clic)")
         col_al1, col_al2 = st.columns([1, 2])
         with col_al1:
             with st.form("form_alerta_web", clear_on_submit=True):
@@ -2126,6 +2590,46 @@ try:
             activas_al = df_alertas_w[df_alertas_w["Estado"].astype(str).str.strip() == "Activa"].copy() if not df_alertas_w.empty and "Estado" in df_alertas_w.columns else pd.DataFrame()
             if not activas_al.empty:
                 st.dataframe(activas_al, use_container_width=True, hide_index=True)
+                c_sn1, c_sn2, c_sn3 = st.columns([1.6, 1, 1])
+                with c_sn1:
+                    opciones_sn = [f"{idx} | {r.get('Jugador_Buscado')} (<= {num_seguro(r.get('Precio_Objetivo', 0)):,} mnds)" for idx, r in activas_al.iterrows()]
+                    sel_sn_comp = st.selectbox("🛒 ¿La compraste? Pasar a Mi Cartera:", opciones_sn, key="sel_sn_to_cart")
+                with c_sn2:
+                    cant_sn_comp = st.number_input("Cant. Comprada", min_value=1, max_value=50, value=1, step=1, key="cant_sn_to_cart")
+                with c_sn3:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("📥 Pasar a Cartera", use_container_width=True, key="btn_sn_to_cart"):
+                        idx_sn_sel = int(sel_sn_comp.split(" | ")[0])
+                        fila_sn_s = df_alertas_w.loc[idx_sn_sel]
+                        nom_sn_s = str(fila_sn_s.get("Jugador_Buscado", "Carta")).strip().title()
+                        p_obj_sn_s = num_seguro(fila_sn_s.get("Precio_Objetivo", 1000), 1000)
+                        df_alertas_w.loc[idx_sn_sel, "Estado"] = "Cumplida"
+                        guardar_hoja_sincronizada(df_alertas_w, "Mis_Alertas", es_admin=es_admin, slug_club=slug_club_activo)
+
+                        df_c_sn = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
+                        if "Cantidad" not in df_c_sn.columns:
+                            df_c_sn["Cantidad"] = 1
+                        nueva_f_sn2 = pd.DataFrame([{
+                            "Jugador_Exacto": nom_sn_s,
+                            "Estrategia": autodetectar_estrategia(nom_sn_s, p_obj_sn_s),
+                            "Cantidad": int(cant_sn_comp),
+                            "Precio_Pagado": int(p_obj_sn_s),
+                            "Estado": "Activo",
+                            "Precio_Venta": 0,
+                            "Costo_EA_Tax": 0,
+                            "Ganancia_Neta": 0,
+                            "ROI_%": 0.0,
+                            "Fecha_Compra": ahora_arg().strftime("%Y-%m-%d %H:%M"),
+                            "Fecha_Venta": ""
+                        }])
+                        df_c_sn = pd.concat([df_c_sn, nueva_f_sn2], ignore_index=True)
+                        guardar_hoja_sincronizada(df_c_sn, "Mi_Cartera", es_admin=es_admin, slug_club=slug_club_activo)
+                        if saldos_cfg.get("modo_liquidez") == "Manual":
+                            saldos_cfg["liquidez_manual"] = max(0, int(saldos_cfg.get("liquidez_manual", liquidez_disp)) - int(p_obj_sn_s * cant_sn_comp))
+                            guardar_saldos_personalizados(saldos_cfg, es_admin, slug_club=slug_club_activo)
+                        st.success(f"✅ ¡{cant_sn_comp}x {nom_sn_s} sumado a Mi Cartera y alerta marcada como Cumplida!")
+                        st.rerun()
+
                 c_btn_al1, c_btn_al2 = st.columns(2)
                 with c_btn_al1:
                     if st.button("🗑️ Limpiar Alertas Activas", use_container_width=True):
