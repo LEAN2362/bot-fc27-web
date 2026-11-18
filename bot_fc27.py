@@ -198,6 +198,34 @@ def clave_cruce(nombre_completo):
     apellido = palabras[-1] if palabras else nombre_base.lower()
     return f"{apellido}_{media}"
 
+def extraer_respaldo_futbin_historico(df_viejo):
+    """Recorre TODO el historial (no solo el último corte) para rescatar el último precio válido de Futbin de cada carta."""
+    respaldo_por_enlace = {}
+    respaldo_por_clave = {}
+    if df_viejo is None or df_viejo.empty:
+        return respaldo_por_enlace, respaldo_por_clave
+    try:
+        for r_old in df_viejo.to_dict('records'):
+            p_fb_old = int(float(r_old.get("Precio_Futbin", 0) or 0))
+            enl_old = str(r_old.get("Enlace_Futbin", "") or "")
+            if p_fb_old <= 0 and "futbin.com" in enl_old:
+                p_fb_old = int(float(r_old.get("Precio_Actual", 0) or 0))
+            if p_fb_old > 0:
+                jug_nom = str(r_old.get("Jugador", "Jugador"))
+                p_con_old = int(float(r_old.get("Precio_Consola", p_fb_old) or p_fb_old))
+                enl_fb_real = enl_old if "futbin.com" in enl_old else f"https://www.futbin.com/players?search={jug_nom.split(' (')[0].replace(' ', '+')}"
+                item_fb = {
+                    "Jugador": jug_nom,
+                    "Enlace": enl_fb_real,
+                    "Precio_Actual": p_fb_old,
+                    "Precio_Consola": p_con_old
+                }
+                respaldo_por_enlace[enl_fb_real] = item_fb
+                respaldo_por_clave[clave_cruce(jug_nom)] = item_fb
+    except Exception:
+        pass
+    return respaldo_por_enlace, respaldo_por_clave
+
 # ==========================================
 # MATEMÁTICA FINANCIERA EA TAX, LAZY & STOP-LOSS (SOPORTE 15M)
 # ==========================================
@@ -507,7 +535,8 @@ def armar_resumen_flipping_gangas(datos_finales):
 # ==========================================
 # FUSIÓN DE BASES: FUTBIN (5000) + FUT.GG (5000)
 # ==========================================
-def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_historicas, fecha_actual):
+def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_historicas, fecha_actual, respaldo_fb_clave=None):
+    respaldo_fb_clave = respaldo_fb_clave or {}
     mapa_gg_clave = {}
     mapa_gg_apellido = {}
     for g in (datos_gg or []):
@@ -535,10 +564,16 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
 
         p_gg = 0
         enlace_gg = ""
+        tipo_gg = ""
         if g:
             p_gg = int(g.get("Precio_FUTGG", 0))
             enlace_gg = g.get("Enlace_GG", "")
+            tipo_gg = str(g.get("Tipo_Carta", "") or "")
             claves_gg_usadas.add(g.get("Enlace_GG", ""))
+
+        nombre_jug_final = jug["Jugador"]
+        if tipo_gg and "TOTW" in tipo_gg.upper() and "TOTW" not in nombre_jug_final.upper() and "IF" not in nombre_jug_final.upper():
+            nombre_jug_final = re.sub(r'\((Media\s*\d{2})[^)]*\)', r'(\1 - TOTW IF)', nombre_jug_final)
 
         if p_fb > 0 and p_gg > 0:
             if p_gg < p_fb:
@@ -595,7 +630,7 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
 
         datos_unificados.append({
             "Fecha": fecha_actual,
-            "Jugador": jug["Jugador"],
+            "Jugador": nombre_jug_final,
             "Precio_Anterior": precio_anterior,
             "Precio_Actual": p_act,
             "Precio_Consola": p_con_fb,
@@ -628,34 +663,56 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
             continue
 
         exclusivos_gg += 1
-        nombre_gg_full = f"{g['Jugador_GG'].split(' (')[0]} (Media {g['Media']} - FUT.GG)"
-        precio_anterior = int(historial_precios.get(enlace_gg, p_gg) or p_gg)
-        var_b = (((p_gg - precio_anterior) / precio_anterior) * 100) if precio_anterior > 0 else 0.0
-        ganancia_neta = (p_gg * 0.95) - precio_anterior if precio_anterior > 0 and p_gg > precio_anterior else 0
+        etiqueta_gg = str(g.get("Tipo_Carta", "") or "FUT.GG").strip()
+        nombre_gg_full = f"{g['Jugador_GG'].split(' (')[0]} (Media {g['Media']} - {etiqueta_gg})"
+
+        # Si existe precio previo de Futbin en el respaldo histórico para esta clave, lo rescatamos
+        fb_hist_item = respaldo_fb_clave.get(g.get("Clave", ""))
+        p_fb_rescatado = int(fb_hist_item["Precio_Actual"]) if fb_hist_item else 0
+        p_con_rescatado = int(fb_hist_item.get("Precio_Consola", p_gg)) if fb_hist_item else p_gg
+        enlace_fb_rescatado = fb_hist_item["Enlace"] if (fb_hist_item and "futbin.com" in str(fb_hist_item.get("Enlace", ""))) else enlace_gg
+
+        if p_fb_rescatado > 0:
+            if p_gg <= p_fb_rescatado:
+                p_act_gg = p_gg
+                fuente_gg = "GG"
+                enlace_opt_gg = enlace_gg
+            else:
+                p_act_gg = p_fb_rescatado
+                fuente_gg = "FB"
+                enlace_opt_gg = enlace_fb_rescatado
+        else:
+            p_act_gg = p_gg
+            fuente_gg = "GG"
+            enlace_opt_gg = enlace_gg
+
+        precio_anterior = int(historial_precios.get(enlace_gg, historial_precios.get(enlace_fb_rescatado, p_act_gg)) or p_act_gg)
+        var_b = (((p_act_gg - precio_anterior) / precio_anterior) * 100) if precio_anterior > 0 else 0.0
+        ganancia_neta = (p_act_gg * 0.95) - precio_anterior if precio_anterior > 0 and p_act_gg > precio_anterior else 0
         var_n = (ganancia_neta / precio_anterior) * 100 if precio_anterior > 0 else 0.0
 
-        st = stats_historicas.get(enlace_gg, {"min": p_gg, "max": p_gg, "prom": p_gg, "count": 1})
-        min_hist = min(st["min"], p_gg)
-        max_hist = max(st["max"], p_gg)
+        st = stats_historicas.get(enlace_gg, stats_historicas.get(enlace_fb_rescatado, {"min": p_act_gg, "max": p_act_gg, "prom": p_act_gg, "count": 1}))
+        min_hist = min(st["min"], p_act_gg)
+        max_hist = max(st["max"], p_act_gg)
         prom_hist = st["prom"]
-        descuento_vs_prom = (((p_gg - prom_hist) / prom_hist) * 100) if prom_hist > 0 else 0.0
+        descuento_vs_prom = (((p_act_gg - prom_hist) / prom_hist) * 100) if prom_hist > 0 else 0.0
 
-        if st["count"] >= 2 and p_gg <= min_hist and p_gg < prom_hist:
+        if st["count"] >= 2 and p_act_gg <= min_hist and p_act_gg < prom_hist:
             estado_hist = "💎 MÍNIMO HISTÓRICO"
         elif descuento_vs_prom <= -12.0:
             estado_hist = f"📉 {descuento_vs_prom:.0f}% vs Prom"
         else:
             estado_hist = "Normal"
 
-        senal_tr = diagnosticar_senal_trading(p_gg, precio_anterior, min_hist, max_hist, prom_hist, st["count"], 0, p_gg)
+        senal_tr = diagnosticar_senal_trading(p_act_gg, precio_anterior, min_hist, max_hist, prom_hist, st["count"], p_fb_rescatado, p_gg)
 
         if "⚠️" in senal_tr:
             accion = "⚠️ EVITAR (CAÍDA)"
-        elif var_b <= -5.0 or (estado_hist == "💎 MÍNIMO HISTÓRICO" and descuento_vs_prom <= -8.0):
+        elif var_b <= -5.0 or (estado_hist == "💎 MÍNIMO HISTÓRICO" and descuento_vs_prom <= -8.0) or "⚡" in senal_tr:
             accion = "🟢 COMPRAR"
         elif var_n >= 5.0:
             accion = "🔴 VENDER"
-        elif enlace_gg not in historial_precios:
+        elif enlace_gg not in historial_precios and enlace_fb_rescatado not in historial_precios:
             accion = "🆕 NUEVO"
         else:
             accion = "⚪ MANTENER"
@@ -664,25 +721,25 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
             "Fecha": fecha_actual,
             "Jugador": nombre_gg_full,
             "Precio_Anterior": precio_anterior,
-            "Precio_Actual": p_gg,
-            "Precio_Consola": p_gg,
-            "Precio_Futbin": 0,
+            "Precio_Actual": p_act_gg,
+            "Precio_Consola": p_con_rescatado,
+            "Precio_Futbin": p_fb_rescatado,
             "Precio_FUTGG": p_gg,
-            "Fuente_Mejor_Precio": "GG",
+            "Fuente_Mejor_Precio": fuente_gg,
             "Precio_Min_Hist": min_hist,
             "Precio_Prom_Hist": prom_hist,
             "Estado_Historico": estado_hist,
             "Senal_Trading": senal_tr,
-            "Puja_Max_10%_ROI": calcular_puja_maxima_segura(p_gg, 0.10),
-            "Break_Even_5%": calcular_break_even(p_gg),
-            "Precio_Lazy_Sugerido": calcular_precio_lazy(p_gg),
+            "Puja_Max_10%_ROI": calcular_puja_maxima_segura(p_act_gg, 0.10),
+            "Break_Even_5%": calcular_break_even(p_act_gg),
+            "Precio_Lazy_Sugerido": calcular_precio_lazy(p_act_gg),
             "Variacion_Bruta_%": round(var_b, 2),
             "Beneficio_Neto_Mnds": round(ganancia_neta),
             "Variacion_Neta_%": round(var_n, 2),
             "Accion": accion,
-            "Enlace_Futbin": enlace_gg,
+            "Enlace_Futbin": enlace_fb_rescatado,
             "Enlace_FUTGG": enlace_gg,
-            "Enlace_Optimo": enlace_gg
+            "Enlace_Optimo": enlace_opt_gg
         })
 
     print(f"🔗 Base Dual Masiva Unificada: {len(datos_unificados)} cartas totales ({len(jugadores_fb)} base FB + {exclusivos_gg} exclusivas de FUT.GG).")
@@ -868,8 +925,11 @@ def escanear_oraculo_contenido(page, datos_finales, ocultar=False):
         cerrar_al_final = True
 
     try:
-        page.get("https://www.futbin.com/27/players?page=1&sort=likes&order=desc")
-        page.wait(1.0)
+        page.get("https://www.futbin.com/players?page=1&sort=likes&order=desc")
+        page.wait(0.8)
+        if not page.ele('xpath://a[contains(@href, "/player/")]', timeout=2):
+            page.get("https://www.futbin.com/27/players?page=1&sort=likes&order=desc")
+            page.wait(0.8)
         script_pop = """
         let pop = [];
         let filas = document.querySelectorAll('table tbody tr, .player-row');
@@ -1218,6 +1278,7 @@ def crear_navegador_optimizado(ocultar=False):
     options = ChromiumOptions()
     options.set_argument('--window-size=1920,1080')
     options.set_argument('--disable-extensions')
+    options.set_argument('--disable-blink-features=AutomationControlled')
     options.no_imgs(False)
 
     en_nube = os.environ.get("GITHUB_ACTIONS") == "true" or sys.platform != "win32"
@@ -1226,13 +1287,34 @@ def crear_navegador_optimizado(ocultar=False):
         options.set_argument('--no-sandbox')
         options.set_argument('--disable-dev-shm-usage')
         options.set_argument('--disable-gpu')
-        options.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
+        options.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')
     elif ocultar:
         options.set_argument('--window-position=-32000,-32000')
 
     page = ChromiumPage(addr_or_opts=options)
     page.set.timeouts(page_load=10)
+    try:
+        page.run_cdp('Page.addScriptToEvaluateOnNewDocument', source="""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        """)
+    except Exception:
+        pass
     return page
+
+def detectar_tipo_carta_gg(texto_card, clases_card="", es_pase_totw=False):
+    """Detecta si una carta en FUT.GG es TOTW / IF, Icon, Hero, Promo u Oro a partir de su alt/clases."""
+    if es_pase_totw:
+        return "TOTW IF"
+    combinado = f"{texto_card} {clases_card}".upper()
+    if any(k in combinado for k in ["TEAM OF THE WEEK", "TOTW", "IN-FORM", "INFORM", "RARITY-TOTW", "RARITY_TOTW"]):
+        return "TOTW IF"
+    if "ICON" in combinado:
+        return "Icon - FUT.GG"
+    if "HERO" in combinado:
+        return "Hero - FUT.GG"
+    if "EVOLUTION" in combinado or "EVO " in combinado:
+        return "Evo - FUT.GG"
+    return "FUT.GG"
 
 def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
     print(f"\n⚡ Iniciando escaneo masivo de hasta {MAX_JUGADORES} cartas en FUT.GG PC ({max_paginas} páginas <= {presupuesto_max:,} mnds)...")
@@ -1273,14 +1355,63 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
             box = box.parentElement;
         }
         let alts = [];
-        for (let img of box.querySelectorAll('img[alt]')) {
-            alts.push(img.getAttribute('alt') || '');
+        for (let img of box.querySelectorAll('img')) {
+            let alt_txt = img.getAttribute('alt') || '';
+            let src_txt = img.getAttribute('src') || '';
+            if (alt_txt) alts.push(alt_txt);
+            if (src_txt.toLowerCase().includes('totw') || src_txt.toLowerCase().includes('inform')) alts.push('TOTW');
         }
+        let clases_box = (box.className || '') + ' ' + (a.className || '');
         let texto_card = alts.join(' | ') + '\\n' + (box.innerText || box.textContent || '');
-        items.push({'href': href, 'texto': texto_card});
+        items.push({'href': href, 'texto': texto_card, 'clases': clases_box});
     }
     return items;
     """
+
+    # Pase 0: Escaneo relámpago dedicado de cartas TOTW en piso (<= TOPE_TOTW_DESCARTE) para garantizar Radar_TOTW
+    urls_totw_dedicadas = [
+        f"https://www.fut.gg/players/?page=1&rarity_id=3&price__gte=9000&price__lte={TOPE_TOTW_DESCARTE}",
+        f"https://www.fut.gg/players/?page=2&rarity_id=3&price__gte=9000&price__lte={TOPE_TOTW_DESCARTE}"
+    ]
+    for idx_t, url_t in enumerate(urls_totw_dedicadas, 1):
+        try:
+            page.get(url_t)
+            if page.ele('xpath://a[contains(@href, "/players/")]', timeout=3):
+                page.wait(0.35)
+                page.stop_loading()
+                datos_t = page.run_js(script_gg) or []
+                for item in datos_t:
+                    href_limpio = (item.get('href', '') or '').split('?')[0]
+                    if not href_limpio or href_limpio in vistos_gg:
+                        continue
+                    match_slug = re.search(r'/players/\d+-([a-zA-Z0-9\-]+)', href_limpio)
+                    if not match_slug:
+                        continue
+                    nombre_gg = match_slug.group(1).replace('-', ' ').title()
+                    texto = item.get('texto', '')
+                    valor_gg = extraer_precio_carta_unica_gg(texto, TOPE_TOTW_DESCARTE)
+                    if not (9000 <= valor_gg <= TOPE_TOTW_DESCARTE):
+                        continue
+                    media = "??"
+                    for cand_m in re.findall(r'\b([6-9]\d)\b', texto):
+                        if 75 <= int(cand_m) <= 99 and int(cand_m) != valor_gg:
+                            media = cand_m
+                            break
+                    if media == "??":
+                        continue
+                    vistos_gg.add(href_limpio)
+                    nombre_fmt = f"{nombre_gg} (Media {media} - TOTW IF)"
+                    jugadores_gg.append({
+                        "Jugador_GG": nombre_fmt,
+                        "Nombre_Puro": sin_tildes(nombre_gg).lower(),
+                        "Media": media,
+                        "Tipo_Carta": "TOTW IF",
+                        "Precio_FUTGG": valor_gg,
+                        "Clave": clave_cruce(nombre_fmt),
+                        "Enlace_GG": f"https://www.fut.gg{href_limpio}" if href_limpio.startswith('/') else href_limpio
+                    })
+        except Exception:
+            continue
 
     paginas_vacias_seguidas = 0
     for pag in range(1, max_paginas + 1):
@@ -1310,6 +1441,7 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
                 continue
             nombre_gg = match_slug.group(1).replace('-', ' ').title()
             texto = item.get('texto', '')
+            clases_box = item.get('clases', '')
 
             valor_gg = extraer_precio_carta_unica_gg(texto, presupuesto_max)
             if not (200 <= valor_gg <= presupuesto_max):
@@ -1322,13 +1454,15 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
                     media = cand_m
                     break
 
+            tipo_carta_gg = detectar_tipo_carta_gg(texto, clases_box, es_pase_totw=False)
             vistos_gg.add(href_limpio)
             nuevos_en_pagina += 1
-            nombre_fmt = f"{nombre_gg} (Media {media})"
+            nombre_fmt = f"{nombre_gg} (Media {media} - {tipo_carta_gg})"
             jugadores_gg.append({
                 "Jugador_GG": nombre_fmt,
                 "Nombre_Puro": sin_tildes(nombre_gg).lower(),
                 "Media": media,
+                "Tipo_Carta": tipo_carta_gg,
                 "Precio_FUTGG": valor_gg,
                 "Clave": clave_cruce(nombre_fmt),
                 "Enlace_GG": f"https://www.fut.gg{href_limpio}" if href_limpio.startswith('/') else href_limpio
@@ -1718,6 +1852,7 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
     inicio_tiempo = time.time()
     df_viejo, df_arb_viejo, df_evos_viejo, df_cartera, df_alertas, historial_precios = cargar_estado_excel()
     stats_historicas = calcular_estadisticas_historicas(df_viejo)
+    respaldo_fb_enlace, respaldo_fb_clave = extraer_respaldo_futbin_historico(df_viejo)
     df_cartera, df_alertas, _ = procesar_mensajes_telegram(df_cartera, df_viejo, df_arb_viejo, df_evos_viejo, df_alertas)
 
     datos_finales = []
@@ -1734,10 +1869,16 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
         print(f"\n🌐 Abriendo navegador para Escaneo Masivo de 5000 Jugadores por portal (Tope: {PRESUPUESTO_MAXIMO:,} mnds)...")
         page_activa = crear_navegador_optimizado(ocultar=ocultar_navegador)
 
+        base_url_futbin = "https://www.futbin.com/players"
         try:
-            page_activa.get("https://www.futbin.com/27/players")
+            page_activa.get(base_url_futbin)
             page_activa.wait(1.0)
             page_activa.run_js('document.cookie = "platform=pc; path=/; max-age=31536000"; localStorage.setItem("platform", "pc");')
+            if not page_activa.ele('xpath://a[contains(@href, "/player/")]', timeout=2):
+                page_activa.get("https://www.futbin.com/27/players")
+                page_activa.wait(0.8)
+                if page_activa.ele('xpath://a[contains(@href, "/player/")]', timeout=2):
+                    base_url_futbin = "https://www.futbin.com/27/players"
         except Exception:
             pass
 
@@ -1785,7 +1926,7 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
         for num_pag in range(1, PAGINAS_FUTBIN + 1):
             if len(jugadores_tendencia) >= MAX_JUGADORES:
                 break
-            url = f"https://www.futbin.com/27/players?page={num_pag}&pc_price=200-{PRESUPUESTO_MAXIMO}"
+            url = f"{base_url_futbin}?page={num_pag}&pc_price=200-{PRESUPUESTO_MAXIMO}"
             print(f"⚡ Futbin PC Pág {num_pag}/{PAGINAS_FUTBIN}... (Capturados FB: {len(jugadores_tendencia)}/{MAX_JUGADORES})")
             try:
                 page_activa.get(url)
@@ -1859,18 +2000,9 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
             else:
                 paginas_fb_vacias = 0
 
-        if not jugadores_tendencia and df_viejo is not None and not df_viejo.empty:
-            print("🛡️ Recuperando respaldo de cartas Futbin para mantener la Base Dual completa...")
-            ult_f_fb = df_viejo['Fecha'].max()
-            for r_old in df_viejo[df_viejo['Fecha'] == ult_f_fb].to_dict('records'):
-                p_fb_old = int(float(r_old.get("Precio_Futbin", r_old.get("Precio_Actual", 0)) or 0))
-                if p_fb_old > 0 and "futbin.com" in str(r_old.get("Enlace_Futbin", "")):
-                    jugadores_tendencia.append({
-                        "Jugador": r_old["Jugador"],
-                        "Enlace": r_old["Enlace_Futbin"],
-                        "Precio_Actual": p_fb_old,
-                        "Precio_Consola": int(float(r_old.get("Precio_Consola", p_fb_old) or p_fb_old))
-                    })
+        if not jugadores_tendencia and respaldo_fb_enlace:
+            print(f"🛡️ Recuperando respaldo histórico completo de {len(respaldo_fb_enlace)} cartas Futbin para mantener la Base Dual...")
+            jugadores_tendencia = list(respaldo_fb_enlace.values())
 
         print(f"\n✅ ¡Base Futbin lista con {len(jugadores_tendencia)} cartas!")
         datos_gg_actuales = escanear_futgg(page_activa, PRESUPUESTO_MAXIMO, PAGINAS_FUTGG)
@@ -1880,7 +2012,8 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
             datos_gg_actuales,
             historial_precios,
             stats_historicas,
-            fecha_actual
+            fecha_actual,
+            respaldo_fb_clave=respaldo_fb_clave
         )
 
     oraculo_txt = escanear_oraculo_contenido(page_activa, datos_finales, ocultar=ocultar_navegador)
@@ -1940,7 +2073,15 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
         for col in df_nuevo.columns:
             if col not in df_viejo.columns:
                 df_viejo[col] = ""
-        df_final = pd.concat([df_viejo[df_nuevo.columns], df_nuevo], ignore_index=True).tail(15000)
+        df_combinado = pd.concat([df_viejo[df_nuevo.columns], df_nuevo], ignore_index=True)
+        df_recientes = df_combinado.tail(25000)
+        # Preservar el último registro histórico con Precio_Futbin > 0 si quedó fuera de las 25.000 filas recientes
+        mask_fb_valido = pd.to_numeric(df_combinado["Precio_Futbin"], errors="coerce").fillna(0) > 0
+        if mask_fb_valido.any():
+            df_semilla_fb = df_combinado[mask_fb_valido].drop_duplicates(subset=["Enlace_Futbin"], keep="last")
+            df_final = pd.concat([df_semilla_fb, df_recientes], ignore_index=True).drop_duplicates(subset=["Fecha", "Enlace_Futbin"], keep="last").tail(25000)
+        else:
+            df_final = df_recientes
     else:
         df_final = df_nuevo
 
