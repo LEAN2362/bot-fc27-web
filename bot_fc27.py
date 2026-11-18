@@ -822,8 +822,11 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
     df_c = df_cartera.copy()
     if "Estrategia" not in df_c.columns:
         df_c["Estrategia"] = ""
+    if "Cantidad" not in df_c.columns:
+        df_c["Cantidad"] = 1
 
     df_c["Estrategia"] = df_c["Estrategia"].fillna("").astype(object)
+    df_c["Cantidad"] = pd.to_numeric(df_c["Cantidad"], errors="coerce").fillna(1).clip(lower=1).astype(int)
     df_c["Precio_Pagado"] = pd.to_numeric(df_c["Precio_Pagado"], errors="coerce").fillna(0)
     df_c["Precio_Venta"] = pd.to_numeric(df_c["Precio_Venta"], errors="coerce").fillna(0)
 
@@ -840,16 +843,16 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
     vendidos = df_c[df_c["Estado"] == "Vendido"].copy()
     activos = df_c[df_c["Estado"] == "Activo"].copy()
 
-    ventas_brutas_tot = int(vendidos["Precio_Venta"].sum()) if not vendidos.empty else 0
+    ventas_brutas_tot = int((vendidos["Precio_Venta"] * vendidos["Cantidad"]).sum()) if not vendidos.empty else 0
     vendidos_con_precio = vendidos[vendidos["Precio_Venta"] > 0] if not vendidos.empty else pd.DataFrame()
-    costo_adq_tot = int(vendidos_con_precio["Precio_Pagado"].sum()) if not vendidos_con_precio.empty else 0
+    costo_adq_tot = int((vendidos_con_precio["Precio_Pagado"] * vendidos_con_precio["Cantidad"]).sum()) if not vendidos_con_precio.empty else 0
     ea_tax_tot = int(round(ventas_brutas_tot * 0.05))
     ingreso_neto_tot = ventas_brutas_tot - ea_tax_tot
     contrib_marginal_tot = ingreso_neto_tot - costo_adq_tot
     margen_sobre_ventas = (contrib_marginal_tot / ventas_brutas_tot * 100) if ventas_brutas_tot > 0 else 0.0
     roi_sobre_costo = (contrib_marginal_tot / costo_adq_tot * 100) if costo_adq_tot > 0 else 0.0
 
-    capital_inmovilizado = int(activos["Precio_Pagado"].sum()) if not activos.empty else 0
+    capital_inmovilizado = int((activos["Precio_Pagado"] * activos["Cantidad"]).sum()) if not activos.empty else 0
     vnr_total_activo = 0
     cartas_estancadas = 0
     cartas_stoploss = 0
@@ -858,6 +861,7 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
     for _, r_act in activos.iterrows():
         j_nom = sin_tildes(str(r_act["Jugador_Exacto"])).lower().strip()
         p_pag = float(r_act["Precio_Pagado"])
+        cant_act = max(1, int(r_act.get("Cantidad", 1)))
         hrs = calcular_horas_inmovilizacion(r_act.get("Fecha_Compra", ""))
         suma_horas_activas += hrs
         if hrs >= HORAS_TOPE_INMOVILIZACION:
@@ -874,7 +878,7 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
         roi_latente = ((vnr_carta - p_pag) / p_pag * 100.0) if p_pag > 0 else 0.0
         if roi_latente <= STOP_LOSS_PCT:
             cartas_stoploss += 1
-        vnr_total_activo += vnr_carta
+        vnr_total_activo += (vnr_carta * cant_act)
 
     prom_dias_stock = round((suma_horas_activas / len(activos)) / 24.0, 1) if not activos.empty else 0.0
     resultado_tenencia_no_realizado = vnr_total_activo - capital_inmovilizado
@@ -889,14 +893,14 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
         if v_est.empty and a_est.empty:
             continue
 
-        vb = int(v_est["Precio_Venta"].sum()) if not v_est.empty else 0
-        ca = int(v_est["Precio_Pagado"].sum()) if not v_est.empty else 0
+        vb = int((v_est["Precio_Venta"] * v_est["Cantidad"]).sum()) if not v_est.empty else 0
+        ca = int((v_est["Precio_Pagado"] * v_est["Cantidad"]).sum()) if not v_est.empty else 0
         tax = int(round(vb * 0.05))
         cm = (vb - tax) - ca
         roi_e = round((cm / ca * 100), 1) if ca > 0 else 0.0
         aciertos = len(v_est[(v_est["Precio_Venta"] * 0.95 - v_est["Precio_Pagado"]) > 0]) if not v_est.empty else 0
         tasa_e = round((aciertos / len(v_est) * 100), 1) if len(v_est) > 0 else 0.0
-        cap_act_e = int(a_est["Precio_Pagado"].sum()) if not a_est.empty else 0
+        cap_act_e = int((a_est["Precio_Pagado"] * a_est["Cantidad"]).sum()) if not a_est.empty else 0
 
         resumen_estrategias.append({
             "Estrategia": est,
@@ -907,7 +911,7 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
             "Contribucion_Marginal_Neta": cm,
             "ROI_Real_%": roi_e,
             "Efectividad_%": tasa_e,
-            "Cartas_Activas": len(a_est),
+            "Cartas_Activas": int(a_est["Cantidad"].sum()) if not a_est.empty else 0,
             "Capital_Activo": cap_act_e
         })
 
