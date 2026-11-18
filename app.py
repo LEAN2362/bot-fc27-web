@@ -648,7 +648,9 @@ def convertir_columnas_numericas(df):
         "Precio_Min_Hist", "Precio_Prom_Hist", "Puja_Max_10%_ROI", "Break_Even_5%",
         "Precio_Lazy_Sugerido", "Variacion_Bruta_%", "Beneficio_Neto_Mnds", "Variacion_Neta_%",
         "Precio_Objetivo", "Margen_Neto_5%", "Brecha_%", "Subida_%", "Ganancia_Potencial_Neta",
-        "Precio_Mas_Barato", "Piso_Compra", "Techo_Venta", "Precio_Base", "Precio_Explosivo"
+        "Precio_Mas_Barato", "Piso_Compra", "Techo_Venta", "Precio_Base", "Precio_Explosivo",
+        "Media", "Puja_Sugerida", "Target_Lazy_2da_Ola", "Puja_Max_Sugerida",
+        "Monto_Monedas", "Incidencia_%"
     ]
     for c in cols_num:
         if c in df.columns:
@@ -762,15 +764,15 @@ try:
             df_hist_excel = limpiar_escaneos_corruptos(
                 convertir_columnas_numericas(pd.read_excel(ARCHIVO_EXCEL, sheet_name="Historial_Tendencias"))
             )
-            tiene_futbin_valido = (
+            tiene_padron_valido = (
                 not df_hist_excel.empty
-                and "Precio_Futbin" in df_hist_excel.columns
-                and (df_hist_excel["Precio_Futbin"].apply(num_seguro) > 0).sum() >= 50
+                and "Precio_Actual" in df_hist_excel.columns
+                and (df_hist_excel["Precio_Actual"].apply(num_seguro) > 0).sum() >= 50
             )
-            fecha_excel = str(df_hist_excel["Fecha"].max()) if tiene_futbin_valido and "Fecha" in df_hist_excel.columns else ""
+            fecha_excel = str(df_hist_excel["Fecha"].max()) if tiene_padron_valido and "Fecha" in df_hist_excel.columns else ""
             fecha_sheet = str(datos.get("Historial_Tendencias", pd.DataFrame()).get("Fecha", pd.Series([""])).max()) if datos else ""
 
-            if tiene_futbin_valido and (not datos or fecha_excel >= fecha_sheet):
+            if tiene_padron_valido and (not datos or fecha_excel >= fecha_sheet):
                 cartera_respaldo = datos.get("Mi_Cartera", pd.DataFrame()) if datos else pd.DataFrame()
                 alertas_respaldo = datos.get("Mis_Alertas", pd.DataFrame()) if datos else pd.DataFrame()
                 datos["Historial_Tendencias"] = df_hist_excel
@@ -1047,6 +1049,9 @@ try:
         df_ult_corte["Puja_Max_10%_ROI"] = df_ult_corte["Precio_Actual"].apply(
             lambda p: redondear_escalon_ea((num_seguro(p) * 0.95) / factor_roi, hacia_arriba=False)
         )
+        df_ult_corte["Break_Even_5%"] = df_ult_corte["Precio_Actual"].apply(
+            lambda p: redondear_escalon_ea(num_seguro(p) / 0.95, hacia_arriba=True)
+        )
         df_ult_corte["Precio_Lazy_Sugerido"] = df_ult_corte["Precio_Actual"].apply(
             lambda p: redondear_escalon_ea(num_seguro(p) * factor_lazy, hacia_arriba=True)
         )
@@ -1175,9 +1180,10 @@ try:
         p_mercado = costo_a
         enlace_a = ""
         if not df_ult_corte.empty and "Jugador" in df_ult_corte.columns:
-            m = df_ult_corte[df_ult_corte["Jugador"].astype(str).str.lower().str.contains(nom_a.lower(), na=False)]
+            m = df_ult_corte[df_ult_corte["Jugador"].astype(str).str.lower().str.contains(nom_a.lower(), na=False)].copy()
             if not m.empty:
-                fila_m = m.iloc[0]
+                m["_diff_costo"] = (m["Precio_Actual"].apply(num_seguro) - costo_a).abs()
+                fila_m = m.sort_values(by="_diff_costo").iloc[0]
                 p_mercado = max(
                     num_seguro(fila_m.get("Precio_Actual", 0)),
                     num_seguro(fila_m.get("Precio_Futbin", 0)),
