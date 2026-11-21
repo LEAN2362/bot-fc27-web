@@ -3783,10 +3783,31 @@ try:
         with c_m2:
             st.subheader("🖤 Radar TOTW en Piso")
             df_tw = datos.get("Radar_TOTW", pd.DataFrame())
-            if not df_tw.empty:
-                st.dataframe(df_tw, use_container_width=True, hide_index=True)
+            if not df_tw.empty and "Jugador" in df_tw.columns:
+                def _fila_totw_valida_web(r_tw):
+                    nom_tw = sin_tildes(str(r_tw.get("Jugador", ""))).upper()
+                    enl_tw = str(r_tw.get("Enlace_Futbin", "") or "")
+                    # Descartar cartas base de FUT.GG (base_id == card_id)
+                    m_base = re.search(r'/players/(\d+)-[^/]+/27-(\d+)(?:/|$)', enl_tw)
+                    if m_base and m_base.group(1) == m_base.group(2):
+                        return False
+                    # Excluir explícitamente Normal, Gold y cartas que no son TOTW
+                    if re.search(r'\b(?:NORMAL|GOLD|RARE|COMMON|HERO|ICON|POTM|TOTY|TOTS|SBC|OBJECTIVE)\b', nom_tw):
+                        return False
+                    # Exigir etiqueta TOTW, IN-FORM o IF
+                    es_etq_totw = bool(re.search(r'(?:\bTOTW\b|IN-FORM|\bIF\b|TEAM OF THE WEEK)', nom_tw))
+                    if not es_etq_totw:
+                        return False
+                    p_tw = num_seguro(r_tw.get("Precio_Actual", 0), 0)
+                    return 9500 <= p_tw <= 18000
+
+                df_tw_filtrado = df_tw[df_tw.apply(_fila_totw_valida_web, axis=1)].copy()
+                if not df_tw_filtrado.empty:
+                    st.dataframe(df_tw_filtrado, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Sin cartas TOTW en piso en este corte.")
             else:
-                st.caption("Sin datos en la pestaña Radar_TOTW.")
+                st.info("Sin cartas TOTW en piso en este corte.")
 
     # ==========================================
     # PESTAÑA 4: CENTRO DE INTELIGENCIA ARTIFICIAL EN VIVO (DINÁMICO BAJO DEMANDA)
