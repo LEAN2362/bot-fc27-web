@@ -5,3 +5,4 @@ openpyxl
 gspread
 requests
 google-genai
+Pillow
