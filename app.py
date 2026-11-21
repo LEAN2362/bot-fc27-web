@@ -10,12 +10,19 @@ import re
 import json
 import math
 import time
+import base64
 import unicodedata
 import html as html_lib
 import requests
 import traceback
 from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
+
+try:
+    from PIL import Image, ImageOps
+except Exception:
+    Image = None
+    ImageOps = None
 
 # ==========================================
 # CONFIGURACIÓN DE PÁGINA Y SISTEMA DE DISEÑO FINTECH
@@ -1630,6 +1637,218 @@ def llamar_ia_en_vivo(prompt, api_key_usar=None):
 
     return "", ""
 
+ESTRATEGIAS_VALIDAS_CARTERA = ["Flipping Meta", "Fodder SBC", "TOTW / IF", "Evolución / Hype"]
+
+def _optimizar_imagen_vision(imagen_bytes, max_ancho=1600):
+    """Redimensiona la imagen si supera max_ancho px y la convierte a JPEG optimizado."""
+    if not imagen_bytes:
+        return b"", "image/jpeg"
+    if Image is not None:
+        try:
+            img = Image.open(io.BytesIO(imagen_bytes))
+            if ImageOps is not None:
+                img = ImageOps.exif_transpose(img)
+            if img.mode in ("RGBA", "LA", "P"):
+                fondo = Image.new("RGB", img.size, (15, 23, 42))
+                img_rgba = img.convert("RGBA")
+                fondo.paste(img_rgba, mask=img_rgba.split()[-1])
+                img = fondo
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+            if img.width > max_ancho:
+                nuevo_alto = max(1, int(round(img.height * (max_ancho / float(img.width)))))
+                filtro_res = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.LANCZOS)
+                img = img.resize((max_ancho, nuevo_alto), filtro_res)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=88, optimize=True)
+            return buf.getvalue(), "image/jpeg"
+        except Exception:
+            pass
+    # Fallback sin Pillow: detectar MIME por cabecera mágica
+    mime = "image/jpeg"
+    if imagen_bytes.startswith(b"\x89PNG"):
+        mime = "image/png"
+    elif imagen_bytes[:4] == b"RIFF" and imagen_bytes[8:12] == b"WEBP":
+        mime = "image/webp"
+    return imagen_bytes, mime
+
+def _parsear_precio_vision(val):
+    """Convierte valores de precio devueltos por Vision (int, '15,000', '14.5K', '1.2M') a entero."""
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return int(round(val))
+    s = str(val or "").strip().upper().replace(" ", "").replace("MNDS", "").replace("COINS", "")
+    if not s:
+        return 0
+    m_km = re.match(r'^(\d+(?:[.,]\d+)?)([KM])$', s)
+    if m_km:
+        num_f = float(m_km.group(1).replace(",", "."))
+        mult = 1000 if m_km.group(2) == "K" else 1000000
+        return int(round(num_f * mult))
+    # Eliminar separadores de miles (puntos o comas)
+    limpio = re.sub(r'[^\d]', '', s)
+    return int(limpio) if limpio.isdigit() else 0
+
+def _normalizar_estrategia_vision(est_raw, nombre_jug, precio):
+    s = sin_tildes(str(est_raw or "")).strip().lower()
+    if "totw" in s or "inform" in s or "in-form" in s or s == "if":
+        return "TOTW / IF"
+    if "fodder" in s or "sbc" in s or "media" in s:
+        return "Fodder SBC"
+    if "evo" in s or "hype" in s:
+        return "Evolución / Hype"
+    if "flip" in s or "meta" in s:
+        return "Flipping Meta"
+    return autodetectar_estrategia(nombre_jug, precio)
+
+def _parsear_json_compras_vision(texto_raw):
+    """Extrae y sanitiza la lista de compras desde la respuesta de texto JSON de Gemini."""
+    if not texto_raw:
+        return []
+    limpio = str(texto_raw).strip()
+    limpio = re.sub(r'^```(?:json)?\s*', '', limpio, flags=re.IGNORECASE)
+    limpio = re.sub(r'\s*```$', '', limpio)
+
+    data = None
+    try:
+        data = json.loads(limpio)
+    except Exception:
+        m_arr = re.search(r'\[[\s\S]*\]', limpio)
+        if m_arr:
+            try:
+                data = json.loads(m_arr.group(0))
+            except Exception:
+                data = None
+        if data is None:
+            m_obj = re.search(r'\{[\s\S]*\}', limpio)
+            if m_obj:
+                try:
+                    obj_u = json.loads(m_obj.group(0))
+                    data = [obj_u] if isinstance(obj_u, dict) else None
+                except Exception:
+                    data = None
+
+    if isinstance(data, dict):
+        data = data.get("compras") or data.get("jugadores") or [data]
+    if not isinstance(data, list):
+        return []
+
+    resultado = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        nom = str(item.get("Jugador", item.get("jugador", item.get("Nombre", ""))) or "").strip()
+        nom = re.sub(r'\s+', ' ', nom)
+        precio = _parsear_precio_vision(item.get("Precio_Pagado", item.get("precio_pagado", item.get("Precio", 0))))
+        cant = num_seguro(item.get("Cantidad", item.get("cantidad", 1)), 1)
+        cant = max(1, min(100, cant))
+        if not nom or not (150 <= precio <= TOPE_RADAR_MAXIMO):
+            continue
+        est = _normalizar_estrategia_vision(item.get("Estrategia", item.get("estrategia", "")), nom, precio)
+        resultado.append({
+            "Jugador": nom,
+            "Cantidad": int(cant),
+            "Precio_Pagado": int(precio),
+            "Estrategia": est
+        })
+    return resultado
+
+def extraer_compras_desde_imagen(imagen_bytes, api_key_usar=None):
+    """
+    Analiza una foto o captura de compras de EA Sports FC 27 con Gemini Vision
+    (SDK google-genai + fallback REST inlineData en base64) y devuelve:
+    (lista_compras, modelo_usado, mensaje_error)
+    """
+    if not imagen_bytes:
+        return [], "", "No se recibieron datos de imagen."
+
+    key_final = (api_key_usar or DEFAULT_GEMINI_KEY).strip()
+    img_opt_bytes, mime_type = _optimizar_imagen_vision(imagen_bytes, max_ancho=1600)
+
+    prompt_vision = (
+        "Sos un asistente experto de trading en EA Sports FC 27 (Web App, Companion App y Consola). "
+        "Analizá esta foto o captura de pantalla y extraé ÚNICAMENTE las cartas que fueron COMPRADAS o GANADAS.\n"
+        "REGLAS ESTRICTAS:\n"
+        "1. Identificá solo las cartas compradas/ganadas (tick verde, 'Ganado', 'Won', 'Comprado por', 'Bought for', 'Pagado' o ítems asignados por compra). "
+        "IGNORÁ pujas superadas ('Superado', 'Outbid'), expiradas o no ganadas si se distinguen.\n"
+        "2. Extraé el nombre limpio del jugador en 'Jugador' (sin símbolos raros ni texto de botones).\n"
+        "3. Extraé el precio pagado exacto en monedas en 'Precio_Pagado' como número entero sin puntos ni comas (ej: 15000, nunca '15,000' ni '15K').\n"
+        "4. Si aparecen varias copias idénticas de la misma carta compradas al mismo precio unitario, agrupalas indicando el total en 'Cantidad' (entero >= 1).\n"
+        "5. Clasificá 'Estrategia' OBLIGATORIAMENTE en uno de estos 4 valores exactos: "
+        "\"Flipping Meta\", \"Fodder SBC\", \"TOTW / IF\" o \"Evolución / Hype\".\n"
+        "6. Devolvé ÚNICAMENTE un JSON válido (un array de objetos), SIN bloques de código markdown, SIN ```json y SIN texto adicional.\n"
+        "Formato exacto de salida:\n"
+        "[{\"Jugador\": \"Nombre Limpio\", \"Cantidad\": 1, \"Precio_Pagado\": 15000, \"Estrategia\": \"Flipping Meta\"}]\n"
+        "Si no se distingue ninguna compra válida en la imagen, devolvé exactamente: []"
+    )
+
+    texto_resp = ""
+    modelo_usado = ""
+    ultimo_err = ""
+
+    # 1. Intento principal con SDK oficial google-genai
+    modelos_sdk = []
+    for m_cand in ["gemini-2.5-flash", "gemini-2.0-flash"] + list(MODELOS_PREFERIDOS_IA):
+        m_clean = m_cand.replace("models/", "")
+        if m_clean not in modelos_sdk:
+            modelos_sdk.append(m_clean)
+
+    try:
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=key_final)
+        part_img = types.Part.from_bytes(data=img_opt_bytes, mime_type=mime_type)
+        for mod in modelos_sdk:
+            try:
+                resp = client.models.generate_content(
+                    model=mod,
+                    contents=[prompt_vision, part_img],
+                    config=types.GenerateContentConfig(temperature=0.1)
+                )
+                if resp and getattr(resp, "text", None):
+                    texto_resp = resp.text.strip()
+                    modelo_usado = mod
+                    break
+            except Exception as e_mod:
+                ultimo_err = str(e_mod)
+                continue
+    except Exception as e_sdk:
+        ultimo_err = str(e_sdk)
+
+    # 2. Fallback vía API REST de Gemini usando inlineData en base64
+    if not texto_resp:
+        img_b64 = base64.b64encode(img_opt_bytes).decode("ascii")
+        payload_rest = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt_vision},
+                    {"inlineData": {"mimeType": mime_type, "data": img_b64}}
+                ]
+            }],
+            "generationConfig": {"temperature": 0.1}
+        }
+        for mod_rest in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod_rest}:generateContent?key={key_final}"
+                r = requests.post(url, json=payload_rest, timeout=28)
+                if r.status_code == 200:
+                    data_j = r.json()
+                    txt_out = data_j["candidates"][0]["content"]["parts"][0]["text"]
+                    if txt_out:
+                        texto_resp = txt_out.strip()
+                        modelo_usado = f"{mod_rest} (REST)"
+                        break
+                else:
+                    ultimo_err = f"HTTP {r.status_code}"
+            except Exception as e_rest:
+                ultimo_err = str(e_rest)
+                continue
+
+    if not texto_resp:
+        return [], "", f"No se pudo conectar con Gemini Vision ({ultimo_err or 'sin respuesta'}). Verificá tu API Key o conexión."
+
+    compras = _parsear_json_compras_vision(texto_resp)
+    return compras, modelo_usado, ""
+
 def generar_reporte_estrategico_vivo(df_corte, filas_cartera, presupuesto, roi_pct, lazy_pct, plataforma, enfoque, top_n, api_key_usar):
     dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
     ahora = ahora_arg()
@@ -2826,6 +3045,139 @@ try:
                             saldos_cfg["liquidez_manual"] = max(0, int(saldos_cfg.get("liquidez_manual", liquidez_disp)) - int(costo_add_rap * cant_add_rap))
                             guardar_saldos_personalizados(saldos_cfg, es_admin, slug_club=slug_club_activo)
                         st.success(f"¡{cant_add_rap}x {nom_add_rap.title()} sumado a tu cartera activa!")
+                        st.rerun()
+
+        # MEJORA 2A-VISION: REGISTRAR COMPRAS POR FOTO / CAPTURA CON GEMINI VISION
+        tiene_preview_foto = bool(st.session_state.get("compras_foto_preview"))
+        with st.expander("📸 Registrar Compras por Foto / Captura (IA Vision)", expanded=tiene_preview_foto):
+            st.caption(
+                "Subí una captura o foto de tus compras en EA Sports FC 27 (Web App, Companion App o Consola). "
+                "Gemini Vision detectará automáticamente solo las cartas ganadas/compradas, sus cantidades y precios pagados."
+            )
+            cv_up, cv_btn = st.columns([2.4, 1.1])
+            with cv_up:
+                foto_compras = st.file_uploader(
+                    "Imagen de compras (PNG, JPG, JPEG, WEBP)",
+                    type=["png", "jpg", "jpeg", "webp"],
+                    key="uploader_compras_vision"
+                )
+            with cv_btn:
+                st.markdown("<br>", unsafe_allow_html=True)
+                btn_analizar_foto = st.button(
+                    "🔍 Analizar Foto con IA",
+                    use_container_width=True,
+                    disabled=(foto_compras is None),
+                    key="btn_analizar_foto_ia"
+                )
+
+            if foto_compras is not None:
+                if st.checkbox("🖼️ Mostrar miniatura de la imagen cargada", value=False, key="chk_ver_foto_vision"):
+                    st.image(foto_compras, use_container_width=False, width=420)
+
+            if btn_analizar_foto and foto_compras is not None:
+                with st.spinner("🤖 Analizando imagen con Gemini Vision..."):
+                    detectados, mod_vis, err_vis = extraer_compras_desde_imagen(
+                        foto_compras.getvalue(),
+                        api_key_custom
+                    )
+                if err_vis:
+                    st.error(f"❌ {err_vis}")
+                elif not detectados:
+                    st.warning("⚠️ No se detectaron cartas compradas/ganadas con precio válido en la imagen. Probá con una captura más nítida.")
+                else:
+                    st.session_state["compras_foto_preview"] = [
+                        {
+                            "Incluir": True,
+                            "Jugador": str(it["Jugador"]).strip(),
+                            "Cantidad": int(it["Cantidad"]),
+                            "Precio_Pagado": int(it["Precio_Pagado"]),
+                            "Estrategia": it["Estrategia"] if it["Estrategia"] in ESTRATEGIAS_VALIDAS_CARTERA else "Flipping Meta"
+                        }
+                        for it in detectados
+                    ]
+                    st.session_state["compras_foto_modelo"] = mod_vis
+                    st.rerun()
+
+            preview_foto = st.session_state.get("compras_foto_preview") or []
+            if preview_foto:
+                mod_prev_txt = st.session_state.get("compras_foto_modelo", "Gemini Vision")
+                st.success(f"✨ Detectados **{len(preview_foto)}** ítem(s) con **{mod_prev_txt}**. Revisá o editá los valores antes de confirmar:")
+                df_preview_foto = pd.DataFrame(preview_foto)
+                edicion_foto = st.data_editor(
+                    df_preview_foto,
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="dynamic",
+                    key="editor_compras_foto_vision",
+                    column_config={
+                        "Incluir": st.column_config.CheckboxColumn("✅ Incluir", default=True),
+                        "Jugador": st.column_config.TextColumn("👤 Jugador"),
+                        "Cantidad": st.column_config.NumberColumn("📦 Cantidad", min_value=1, max_value=100, step=1, format="%d"),
+                        "Precio_Pagado": st.column_config.NumberColumn("💵 Precio Pagado (Unit.)", min_value=150, max_value=TOPE_RADAR_MAXIMO, step=50, format="%d mnds"),
+                        "Estrategia": st.column_config.SelectboxColumn("🏷️ Estrategia", options=ESTRATEGIAS_VALIDAS_CARTERA)
+                    }
+                )
+
+                df_sel_foto = edicion_foto[edicion_foto["Incluir"] == True].copy() if not edicion_foto.empty else pd.DataFrame()
+                unidades_lote_foto = 0
+                costo_lote_foto = 0
+                filas_listas_foto = []
+                if not df_sel_foto.empty:
+                    for _, rf in df_sel_foto.iterrows():
+                        jug_f = str(rf.get("Jugador", "") or "").strip()
+                        cant_f = max(1, min(100, num_seguro(rf.get("Cantidad", 1), 1)))
+                        precio_f = num_seguro(rf.get("Precio_Pagado", 0), 0)
+                        est_f = str(rf.get("Estrategia", "Flipping Meta") or "Flipping Meta")
+                        if est_f not in ESTRATEGIAS_VALIDAS_CARTERA:
+                            est_f = "Flipping Meta"
+                        if jug_f and precio_f > 0:
+                            unidades_lote_foto += cant_f
+                            costo_lote_foto += int(cant_f * precio_f)
+                            filas_listas_foto.append({
+                                "Jugador_Exacto": jug_f,
+                                "Estrategia": est_f,
+                                "Cantidad": cant_f,
+                                "Precio_Pagado": precio_f,
+                                "Estado": "Activo",
+                                "Precio_Venta": 0,
+                                "Costo_EA_Tax": 0,
+                                "Ganancia_Neta": 0,
+                                "ROI_%": 0.0,
+                                "Fecha_Compra": ahora_arg().strftime("%Y-%m-%d %H:%M"),
+                                "Fecha_Venta": ""
+                            })
+
+                st.info(
+                    f"🧾 **Resumen del lote a confirmar ({nombre_club_activo}):** "
+                    f"**{len(filas_listas_foto)}** fila(s) · **{unidades_lote_foto}** carta(s) totales · "
+                    f"Costo total: **{costo_lote_foto:,} mnds**"
+                )
+
+                cf_ok, cf_cancel = st.columns([2, 1])
+                with cf_ok:
+                    if st.button(
+                        "✅ Confirmar y Guardar en Mi Cartera",
+                        type="primary",
+                        use_container_width=True,
+                        disabled=(len(filas_listas_foto) == 0),
+                        key="btn_confirmar_compras_foto"
+                    ):
+                        df_c_act = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
+                        if "Cantidad" not in df_c_act.columns:
+                            df_c_act["Cantidad"] = 1
+                        df_c_act = pd.concat([df_c_act, pd.DataFrame(filas_listas_foto)], ignore_index=True)
+                        guardar_hoja_sincronizada(df_c_act, "Mi_Cartera", es_admin=es_admin, slug_club=slug_club_activo)
+                        if saldos_cfg.get("modo_liquidez") == "Manual":
+                            saldos_cfg["liquidez_manual"] = max(0, int(saldos_cfg.get("liquidez_manual", liquidez_disp)) - int(costo_lote_foto))
+                            guardar_saldos_personalizados(saldos_cfg, es_admin, slug_club=slug_club_activo)
+                        st.session_state.pop("compras_foto_preview", None)
+                        st.session_state.pop("compras_foto_modelo", None)
+                        st.success(f"✅ ¡{unidades_lote_foto} carta(s) guardadas en la cartera de {nombre_club_activo} por {costo_lote_foto:,} mnds!")
+                        st.rerun()
+                with cf_cancel:
+                    if st.button("🗑️ Descartar Detección", use_container_width=True, key="btn_descartar_compras_foto"):
+                        st.session_state.pop("compras_foto_preview", None)
+                        st.session_state.pop("compras_foto_modelo", None)
                         st.rerun()
 
         # MEJORA 2B: TABLA DE CARTERA ACTIVA 100% EDITABLE CON SOPORTE DE VENTA PARCIAL DE LOTES
