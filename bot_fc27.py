@@ -57,6 +57,7 @@ REFERENCIA_FODDER = {
 TOPE_PRECIO_BASE_EVO = 15000
 UMBRAL_SUBIDA_EVO_PCT = 35.0
 TOPE_TOTW_DESCARTE = 16500
+COLUMNAS_RADAR_TOTW = ["Jugador", "Media", "Precio_Actual", "Fuente", "Break_Even_5%", "Precio_Lazy_1h", "Riesgo", "Enlace_Futbin"]
 
 def ahora_arg():
     """Devuelve siempre la fecha y hora exacta de Argentina (UTC-3)."""
@@ -115,8 +116,8 @@ def sincronizar_todo_a_google_sheets(
             subir_dataframe_gsheets(sh, "Arbitraje_FUTGG", df_arbitraje, max_filas=1000)
         if not df_evos.empty:
             subir_dataframe_gsheets(sh, "Radar_Evos", df_evos, max_filas=500)
-        if not df_totw.empty:
-            subir_dataframe_gsheets(sh, "Radar_TOTW", df_totw, max_filas=500)
+        df_totw_sync = df_totw if (df_totw is not None and not df_totw.empty) else pd.DataFrame(columns=COLUMNAS_RADAR_TOTW)
+        subir_dataframe_gsheets(sh, "Radar_TOTW", df_totw_sync, max_filas=500)
         if not df_domino.empty:
             subir_dataframe_gsheets(sh, "Radar_Links_Domino", df_domino, max_filas=500)
         print("✅ ¡Google Sheets actualizado con éxito en la nube!")
@@ -1044,7 +1045,7 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
                 claves_gg_usadas.add(enlace_gg)
 
         if tipo_gg and "TOTW" in tipo_gg.upper() and cat_fb == "TOTW/IF" and "TOTW" not in nombre_jug_final.upper():
-            nombre_jug_final = re.sub(r'\((Media\s*\d{2})[^)]*\)', r'(\1 - TOTW IF)', nombre_jug_final)
+            nombre_jug_final = re.sub(r'\((Media\s*\d{2})[^)]*\)', r'(\1 - TOTW)', nombre_jug_final)
 
         reg = _construir_registro_unificado(
             fecha_actual, nombre_jug_final, p_fb, p_gg, p_con_fb,
@@ -1066,8 +1067,8 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
             continue
 
         exclusivos_gg += 1
-        etiqueta_gg = str(g.get("Tipo_Carta", "") or "Normal/Oro").strip()
-        nombre_gg_full = f"{g['Jugador_GG'].split(' (')[0]} (Media {media_g} - {etiqueta_gg})"
+        etiqueta_gg = str(g.get("Tipo_Carta", "") or "Normal").strip()
+        nombre_gg_full = f"{g['Jugador_GG'].split(' (')[0]} (Media {media_g} - {etiqueta_gg} - FUT.GG)"
         cat_gg = categoria_version_carta(nombre_gg_full)
 
         # Rescatar precio previo/live de Futbin desde mapa_historico_fb si coincide exactamente en media y categoría
@@ -1493,21 +1494,48 @@ def analizar_fodder(datos_jugadores):
             texto_fodder += f"🔹 *Media {media_obj}:* Sin muestra en este escaneo.\n\n"
     return texto_fodder, pd.DataFrame(filas_fodder)
 
+def es_carta_base_url_gg(enlace):
+    """En FUT.GG una carta base (Oro/Plata/Bronce) tiene el mismo ID en el slug y en '/27-{id}/'; los TOTW siempre tienen ID versionado distinto."""
+    m = re.search(r'/players/(\d+)-[^/]+/27-(\d+)(?:/|$)', str(enlace or ""))
+    if m and m.group(1) == m.group(2):
+        return True
+    return False
+
+def es_etiqueta_totw_estricta(nombre_full, enlace=""):
+    """Exige etiqueta explícita TOTW/Team of the Week/In-Form/- IF) y descarta explícitamente Normal/Gold/Rare/Common/Hero/Icon/POTM/TOTY/TOTS/SBC/Objective."""
+    if not nombre_full:
+        return False
+    if es_carta_base_url_gg(enlace):
+        return False
+    nom_up = sin_tildes(str(nombre_full)).upper()
+    terminos_excluidos = ("NORMAL", "GOLD", "RARE", "COMMON", "HERO", "ICON", "POTM", "TOTY", "TOTS", "SBC", "OBJECTIVE")
+    if re.search(r'\b(?:' + "|".join(terminos_excluidos) + r')\b', nom_up):
+        return False
+    tiene_etiqueta_totw = (
+        ("TOTW" in nom_up)
+        or ("TEAM OF THE WEEK" in nom_up)
+        or ("IN-FORM" in nom_up)
+        or ("- IF)" in nom_up)
+        or bool(re.search(r'(?:-\s*IF\b|\(IF\s+\d{2}\))', nom_up))
+    )
+    return tiene_etiqueta_totw
+
 def analizar_totw_piso(datos_jugadores):
     if not datos_jugadores:
-        return "", pd.DataFrame()
+        return "", pd.DataFrame(columns=COLUMNAS_RADAR_TOTW)
     candidatos_totw = []
     for j in datos_jugadores:
         nombre_full = str(j.get("Jugador", ""))
-        precio = int(j.get("Precio_Actual", 0))
+        precio = int(j.get("Precio_Actual", 0) or 0)
         fuente_t = j.get("Fuente_Mejor_Precio", "FB")
         enlace_t = j.get("Enlace_Optimo", j.get("Enlace_Futbin", ""))
+        enlace_gg_t = j.get("Enlace_FUTGG", "")
         media_str = extraer_media_exacta(nombre_full)
         media = int(media_str) if media_str else 0
-        es_totw = categoria_version_carta(nombre_full) == "TOTW/IF"
+        es_totw = es_etiqueta_totw_estricta(nombre_full, enlace=enlace_gg_t or enlace_t)
         if es_totw and 9500 <= precio <= TOPE_TOTW_DESCARTE and media >= 83:
             candidatos_totw.append({
-                "Jugador": nombre_full.split(" (")[0] + f" (IF {media})",
+                "Jugador": nombre_full.split(" (")[0] + f" (Media {media} - TOTW)",
                 "Media": media,
                 "Precio_Actual": precio,
                 "Fuente": fuente_t,
@@ -1520,10 +1548,10 @@ def analizar_totw_piso(datos_jugadores):
                 "Riesgo": "🟢 Nulo (Cerca de descarte)" if precio <= 12500 else "🟡 Bajo (Piso SBC)",
                 "Enlace_Futbin": enlace_t
             })
-    df_totw = pd.DataFrame(candidatos_totw)
+    df_totw = pd.DataFrame(candidatos_totw, columns=COLUMNAS_RADAR_TOTW)
     if df_totw.empty:
-        return "🖤 *RADAR TOTW DUAL (Cero Riesgo)*\n━━━━━━━━━━━━━━━━━━\nSin IFs de media 83+ por debajo de 16.5k en este corte.\n\n", df_totw
-    df_totw = df_totw.sort_values(by=["Precio_Actual", "Media"], ascending=[True, False])
+        return "🖤 *RADAR TOTW DUAL (Cero Riesgo)*\n━━━━━━━━━━━━━━━━━━\nSin cartas TOTW de media 83+ en piso (9,500–16,500 mnds) en este corte.\n\n", df_totw
+    df_totw = df_totw.sort_values(by=["Precio_Actual", "Media"], ascending=[True, False]).reset_index(drop=True)
     txt_totw = "🖤 *RADAR TOTW EN PISO (Futbin + FUT.GG)*\n━━━━━━━━━━━━━━━━━━\n"
     for _, row in df_totw.head(5).iterrows():
         txt_totw += (
@@ -1709,22 +1737,30 @@ def _detener_carga_segura(page):
     except Exception:
         pass
 
-def detectar_tipo_carta_gg(texto_card, clases_card="", es_pase_totw=False):
-    """Detecta si una carta en FUT.GG es TOTW/IF, Promo/Especial o Normal/Oro a partir de su alt/clases/rarity."""
-    if es_pase_totw:
-        return "TOTW IF"
-    combinado = sin_tildes(f"{texto_card} {clases_card}").upper()
-    if any(k in combinado for k in ["TEAM OF THE WEEK", "TOTW", "IN-FORM", "INFORM", "RARITY-TOTW", "RARITY_TOTW"]):
-        return "TOTW IF"
-    if "ICON" in combinado:
-        return "Icon - Promo/Especial"
-    if "HERO" in combinado:
-        return "Hero - Promo/Especial"
-    if "EVOLUTION" in combinado or "EVO " in combinado:
-        return "Evo - Promo/Especial"
-    if categoria_version_carta(combinado) == "Promo/Especial":
+def detectar_tipo_carta_gg(texto_card, clases_card="", texto_alts="", texto_badges="", href=""):
+    """
+    Detecta la rareza real de una carta en FUT.GG revisando img[alt], clases/badges de rareza
+    y texto del contenedor individual (`box`). Nunca etiqueta una carta base (base_id == card_id)
+    ni cartas Gold/Normal/Hero/Icon/Promo como TOTW.
+    """
+    if es_carta_base_url_gg(href):
+        return "Normal"
+
+    combinado = sin_tildes(f"{texto_alts} {texto_badges} {clases_card} {texto_card}").upper()
+    exclusiones_no_totw = ("HERO", "ICON", "POTM", "TOTY", "TOTS", "SBC", "OBJECTIVE", "EVOLUTION")
+    tiene_exclusion_promo = bool(re.search(r'\b(?:' + "|".join(exclusiones_no_totw) + r')\b', combinado))
+    tiene_marca_base = bool(re.search(r'\b(?:RARE GOLD|COMMON GOLD|GOLD RARE|GOLD COMMON|COMMON SILVER|RARE SILVER|COMMON BRONZE|RARE BRONZE)\b', combinado))
+
+    es_totw_real = (
+        not tiene_exclusion_promo
+        and not tiene_marca_base
+        and any(k in combinado for k in ["TEAM OF THE WEEK", "TOTW", "IN-FORM", "RARITY-TOTW", "RARITY_TOTW", "RARITY-3", "RARITY_3"])
+    )
+    if es_totw_real:
+        return "TOTW"
+    if tiene_exclusion_promo or "EVO " in combinado or categoria_version_carta(combinado) == "Promo/Especial":
         return "Promo/Especial"
-    return "Normal/Oro"
+    return "Normal"
 
 def extraer_media_futgg(texto_inner, texto_alts, valor_gg=0, min_media=65):
     """
@@ -1796,25 +1832,43 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
         let alts = [];
         for (let img of box.querySelectorAll('img')) {
             let alt_txt = img.getAttribute('alt') || '';
+            let title_txt = img.getAttribute('title') || '';
             let src_txt = img.getAttribute('src') || '';
             if (alt_txt) alts.push(alt_txt);
+            if (title_txt) alts.push(title_txt);
             let src_low = src_txt.toLowerCase();
-            if (src_low.includes('totw') || src_low.includes('inform')) alts.push('TOTW');
+            if (src_low.includes('team-of-the-week') || src_low.includes('totw') || src_low.includes('in-form') || src_low.includes('/rarity/3') || src_low.includes('rarity-3')) alts.push('Team of the Week TOTW');
             else if (src_low.includes('icon')) alts.push('ICON');
             else if (src_low.includes('hero')) alts.push('HERO');
-            else if (src_low.includes('promo') || src_low.includes('special') || src_low.includes('rttk') || src_low.includes('toty') || src_low.includes('tots')) alts.push('PROMO');
+            else if (src_low.includes('toty')) alts.push('TOTY');
+            else if (src_low.includes('tots')) alts.push('TOTS');
+            else if (src_low.includes('potm')) alts.push('POTM');
+            else if (src_low.includes('promo') || src_low.includes('special') || src_low.includes('rttk')) alts.push('PROMO');
+        }
+        let badges = [];
+        for (let b of box.querySelectorAll('[class*="rarity"], [class*="badge"], [class*="version"], [data-rarity], [data-card-type]')) {
+            let bt = (b.innerText || b.textContent || '').trim();
+            let bc = b.className || '';
+            let br = b.getAttribute('data-rarity') || '';
+            let ba = b.getAttribute('aria-label') || b.getAttribute('title') || '';
+            if (bt) badges.push(bt);
+            if (typeof bc === 'string' && bc) badges.push(bc);
+            if (br) badges.push('rarity-' + br);
+            if (ba) badges.push(ba);
         }
         let nodo_p = box.querySelector('[class*="price"], [data-testid*="price"]');
         let texto_precio = nodo_p ? (nodo_p.innerText || nodo_p.textContent || '') : '';
-        let clases_box = (box.className || '') + ' ' + (a.className || '');
+        let clases_box = (box.className || '') + ' ' + (a.className || '') + ' ' + (box.getAttribute('data-rarity') || '');
         let texto_inner = box.innerText || box.textContent || '';
         let texto_alts = alts.join(' | ');
+        let texto_badges = badges.join(' | ');
         let texto_card = texto_alts + '\\n' + texto_inner;
         items.push({
             'href': href,
             'texto': texto_card,
             'texto_inner': texto_inner,
             'texto_alts': texto_alts,
+            'texto_badges': texto_badges,
             'texto_precio': texto_precio,
             'clases': clases_box
         });
@@ -1822,10 +1876,10 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
     return items;
     """
 
-    # Pase 0: Escaneo relámpago dedicado de cartas TOTW en piso (<= TOPE_TOTW_DESCARTE) para garantizar Radar_TOTW
+    # Pase 0: Escaneo relámpago dedicado de cartas TOTW en piso (<= TOPE_TOTW_DESCARTE), validando rareza real en DOM
     urls_totw_dedicadas = [
-        f"https://www.fut.gg/players/?page=1&rarity_id=3&price__gte=9000&price__lte={TOPE_TOTW_DESCARTE}",
-        f"https://www.fut.gg/players/?page=2&rarity_id=3&price__gte=9000&price__lte={TOPE_TOTW_DESCARTE}"
+        f"https://www.fut.gg/players/?page=1&rarities=3&price__gte=9000&price__lte={TOPE_TOTW_DESCARTE}",
+        f"https://www.fut.gg/players/?page=2&rarities=3&price__gte=9000&price__lte={TOPE_TOTW_DESCARTE}"
     ]
     for url_t in urls_totw_dedicadas:
         try:
@@ -1845,20 +1899,30 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
                     texto = item.get('texto', '')
                     texto_inner = item.get('texto_inner', texto)
                     texto_alts = item.get('texto_alts', '')
+                    texto_badges = item.get('texto_badges', '')
                     texto_p = item.get('texto_precio', '')
+                    clases_box = item.get('clases', '')
                     valor_gg = extraer_precio_carta_unica_gg(texto, TOPE_TOTW_DESCARTE, texto_precio=texto_p)
                     if not (9000 <= valor_gg <= TOPE_TOTW_DESCARTE) or not es_multiplo_escalon_ea(valor_gg, TOPE_TOTW_DESCARTE):
+                        continue
+                    # Verificar rareza REAL dentro de la caja individual (jamás asumir TOTW por la URL)
+                    tipo_real_t = detectar_tipo_carta_gg(
+                        texto_inner, clases_card=clases_box,
+                        texto_alts=texto_alts, texto_badges=texto_badges,
+                        href=href_limpio
+                    )
+                    if tipo_real_t != "TOTW":
                         continue
                     media = extraer_media_futgg(texto_inner, texto_alts, valor_gg=valor_gg, min_media=75)
                     if media == "??":
                         continue
                     vistos_gg.add(href_limpio)
-                    nombre_fmt = f"{nombre_gg} (Media {media} - TOTW IF)"
+                    nombre_fmt = f"{nombre_gg} (Media {media} - TOTW - FUT.GG)"
                     jugadores_gg.append({
                         "Jugador_GG": nombre_fmt,
                         "Nombre_Puro": sin_tildes(nombre_gg).lower(),
                         "Media": media,
-                        "Tipo_Carta": "TOTW IF",
+                        "Tipo_Carta": "TOTW",
                         "Precio_FUTGG": valor_gg,
                         "Clave": clave_cruce(nombre_fmt),
                         "Enlace_GG": f"https://www.fut.gg{href_limpio}" if href_limpio.startswith('/') else href_limpio
@@ -1906,6 +1970,7 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
             texto = item.get('texto', '')
             texto_inner = item.get('texto_inner', texto)
             texto_alts = item.get('texto_alts', '')
+            texto_badges = item.get('texto_badges', '')
             texto_p = item.get('texto_precio', '')
             clases_box = item.get('clases', '')
 
@@ -1917,10 +1982,14 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
             if media == "??":
                 continue
 
-            tipo_carta_gg = detectar_tipo_carta_gg(texto, clases_box, es_pase_totw=False)
+            tipo_carta_gg = detectar_tipo_carta_gg(
+                texto_inner, clases_card=clases_box,
+                texto_alts=texto_alts, texto_badges=texto_badges,
+                href=href_limpio
+            )
             vistos_gg.add(href_limpio)
             nuevos_en_pagina += 1
-            nombre_fmt = f"{nombre_gg} (Media {media} - {tipo_carta_gg})"
+            nombre_fmt = f"{nombre_gg} (Media {media} - {tipo_carta_gg} - FUT.GG)"
             jugadores_gg.append({
                 "Jugador_GG": nombre_fmt,
                 "Nombre_Puro": sin_tildes(nombre_gg).lower(),
@@ -2343,20 +2412,40 @@ def formatear_dashboard_financiero_excel(ruta_excel):
     except Exception:
         pass
 
-def _detectar_tipo_carta_futbin(texto_fila, pistas_rareza="", lineas=None):
-    """Determina con precisión la categoría de una carta en Futbin (TOTW IF, Promo/Especial o Normal/Oro)."""
-    combinado = sin_tildes(f"{pistas_rareza} {texto_fila}").upper()
-    if any(k in combinado for k in ["TEAM OF THE WEEK", "TOTW", "IN-FORM", "INFORM", "GOLD-IF", "SILVER-IF", "BRONZE-IF"]):
-        return "TOTW IF"
-    if categoria_version_carta(combinado) == "Promo/Especial":
+def _detectar_tipo_carta_futbin(pistas_rareza="", data_rare="", badge_version=""):
+    """
+    Determina la rareza/versión real de una carta en Futbin únicamente desde atributos DOM
+    estructurados (data-rare, data-rarity, clases de fila/rating y badges de versión),
+    sin leer líneas sueltas de texto_fila para evitar falsos positivos con nombres o playstyles.
+    """
+    dr = sin_tildes(str(data_rare or "")).strip().upper()
+    bv = sin_tildes(str(badge_version or "")).strip().upper()
+    combinado = sin_tildes(f"{dr} {bv} {pistas_rareza}").upper()
+
+    # Exclusiones explícitas de cartas que nunca son TOTW
+    exclusiones_no_totw = ("HERO", "ICON", "POTM", "TOTY", "TOTS", "SBC", "OBJECTIVE", "EVOLUTION")
+    tiene_exclusion_promo = bool(re.search(r'\b(?:' + "|".join(exclusiones_no_totw) + r')\b', combinado))
+
+    # Detección de TOTW por atributo data-rare="3" / clases IF / badges explícitos
+    es_data_rare_totw = dr in ("3", "IF", "TOTW", "GOLD-IF", "SILVER-IF", "BRONZE-IF")
+    es_totw_dom = (
+        not tiene_exclusion_promo
+        and (
+            es_data_rare_totw
+            or any(k in combinado for k in ["TEAM OF THE WEEK", "TOTW", "IN-FORM", "GOLD-IF", "SILVER-IF", "BRONZE-IF", "IF-GOLD", "IF-SILVER", "IF-BRONZE", "RARITY-3", "RARITY_3"])
+            or bool(re.search(r'(?:^|\s)IF(?:\s|$|-)', bv))
+        )
+    )
+    if es_totw_dom:
+        return "TOTW"
+
+    if dr in ("0", "1", "NORMAL", "COMMON", "RARE", "GOLD", "GOLD-RARE", "GOLD-COMMON", "NON-RARE"):
+        return "Normal"
+
+    if tiene_exclusion_promo or categoria_version_carta(combinado) == "Promo/Especial":
         return "Promo/Especial"
-    for l in (lineas or []):
-        l_u = sin_tildes(l).upper()
-        if any(k in l_u for k in ["TOTW", "IN-FORM", "INFORM"]):
-            return "TOTW IF"
-        if categoria_version_carta(l_u) == "Promo/Especial":
-            return l.strip()
-    return "Normal/Oro"
+
+    return "Normal"
 
 def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
     inicio_tiempo = time.time()
@@ -2421,12 +2510,34 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                 if (match) media = match[1];
             }
 
+            // Extraer rareza/versión real desde atributos data-rare, clases de fila/rating y badges dedicados
+            let nodo_rare = fila.querySelector('[data-rare], [data-rarity], [data-version], [data-card-type]');
+            let data_rare = (fila.getAttribute('data-rare') || fila.getAttribute('data-rarity') || fila.getAttribute('data-version') || '')
+                            + ' ' + (rating_ele ? (rating_ele.getAttribute('data-rare') || rating_ele.getAttribute('data-rarity') || '') : '')
+                            + ' ' + (nodo_rare ? (nodo_rare.getAttribute('data-rare') || nodo_rare.getAttribute('data-rarity') || nodo_rare.getAttribute('data-version') || nodo_rare.getAttribute('data-card-type') || '') : '');
+
+            let badge_nodos = fila.querySelectorAll('.player-version, .version, .card-version, .rarity, .card-type, .player-rarity, td.version, [class*="version"], [class*="rarity"]');
+            let badges = [];
+            for (let bn of badge_nodos) {
+                let btxt = (bn.innerText || bn.textContent || '').trim();
+                let bcls = bn.className || '';
+                let btit = bn.getAttribute('title') || bn.getAttribute('aria-label') || '';
+                if (btxt && btxt.length <= 40) badges.push(btxt);
+                if (typeof bcls === 'string' && bcls) badges.push(bcls);
+                if (btit) badges.push(btit);
+            }
+
             let pistas = [(fila.className || ''), (rating_ele ? (rating_ele.className || '') : '')];
             for (let img of fila.querySelectorAll('img')) {
                 let alt_t = img.getAttribute('alt') || '';
                 let src_t = img.getAttribute('src') || '';
-                if (alt_t) pistas.push(alt_t);
-                if (src_t) pistas.push(src_t);
+                let src_low = src_t.toLowerCase();
+                if (src_low.includes('rare') || src_low.includes('card') || src_low.includes('totw') || src_low.includes('version') || src_low.includes('bg')) {
+                    if (alt_t) pistas.push(alt_t);
+                    pistas.push(src_t);
+                } else if (alt_t && /totw|team of the week|in-form|icon|hero|toty|tots|potm|promo|gold|rare|common/i.test(alt_t)) {
+                    pistas.push(alt_t);
+                }
             }
 
             data.push({
@@ -2435,6 +2546,8 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                 'texto_precio': texto_precio,
                 'texto_consola': texto_consola,
                 'media': media,
+                'data_rare': data_rare.trim(),
+                'badge_version': badges.join(' '),
                 'pistas_rareza': pistas.join(' ')
             });
         }
@@ -2476,6 +2589,8 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                 texto_fila = item.get('texto_fila', '')
                 texto_precio = item.get('texto_precio', '')
                 texto_consola = item.get('texto_consola', '')
+                data_rare = item.get('data_rare', '')
+                badge_version = item.get('badge_version', '')
                 pistas_rareza = item.get('pistas_rareza', '')
 
                 if not href or '/player/' not in href or href in enlaces_vistos:
@@ -2496,7 +2611,11 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                 if media == "??":
                     continue
 
-                tipo_carta = _detectar_tipo_carta_futbin(texto_fila, pistas_rareza=pistas_rareza, lineas=lineas)
+                tipo_carta = _detectar_tipo_carta_futbin(
+                    pistas_rareza=pistas_rareza,
+                    data_rare=data_rare,
+                    badge_version=badge_version
+                )
 
                 valor_actual = extraer_precio_robusto(texto_precio, texto_fila, PRESUPUESTO_MAXIMO)
                 valor_consola = extraer_precio_robusto(texto_consola, texto_fila, PRESUPUESTO_MAXIMO) or valor_actual
@@ -2702,8 +2821,8 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                 df_arbitraje.to_excel(writer, index=False, sheet_name="Arbitraje_FUTGG")
             if not df_evos.empty:
                 df_evos.to_excel(writer, index=False, sheet_name="Radar_Evos")
-            if not df_totw.empty:
-                df_totw.to_excel(writer, index=False, sheet_name="Radar_TOTW")
+            df_totw_excel = df_totw if (df_totw is not None and not df_totw.empty) else pd.DataFrame(columns=COLUMNAS_RADAR_TOTW)
+            df_totw_excel.to_excel(writer, index=False, sheet_name="Radar_TOTW")
             if not df_domino.empty:
                 df_domino.to_excel(writer, index=False, sheet_name="Radar_Links_Domino")
             if not df_clubes_cloud_prev.empty:
