@@ -187,54 +187,87 @@ def llamar_gemini_turbo(prompt):
         pass
     return "", ""
 
+UMBRAL_DESFASE_VERSION_PCT = 45.0
+
 def sin_tildes(texto):
     return ''.join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn')
 
+def extraer_media_exacta(texto):
+    """Extrae una media válida (45-99) de un nombre formateado. Devuelve '' si falta o es '??'."""
+    if not texto:
+        return ""
+    m = re.search(r'Media\s*(\d{2})\b', str(texto))
+    if m:
+        val = int(m.group(1))
+        if 45 <= val <= 99:
+            return str(val)
+    return ""
+
 def categoria_version_carta(texto_nombre_o_tipo):
-    """Clasifica la versión de la carta para no mezclar Oro con TOTW/IF, Icon, Hero o Promo del mismo jugador."""
+    """Clasifica estrictamente la carta en 'Normal/Oro', 'TOTW/IF' o 'Promo/Especial' para impedir cruces falsos."""
     t = sin_tildes(str(texto_nombre_o_tipo)).upper()
-    if any(k in t for k in ["TOTW", "IN-FORM", "INFORM", " - IF"]):
-        return "totw"
-    if "ICON" in t:
-        return "icon"
-    if "HERO" in t:
-        return "hero"
-    if any(k in t for k in ["EVO", "EVOLUTION", "PROMO", "SPECIAL", "RTTK", "RTTF", "TRAILBLAZER", "CENTURION", "THUNDER", "TOTY", "TOTS", "FUTTIES"]):
-        return "promo"
-    return "base"
+    if any(k in t for k in ["TOTW", "IN-FORM", "INFORM", "TEAM OF THE WEEK", "RARITY-TOTW", "RARITY_TOTW"]) or re.search(r'(?:-\s*IF\b|\(IF\b|\bIF\))', t):
+        return "TOTW/IF"
+    palabras_promo = [
+        "ICON", "HERO", "EVO", "EVOLUTION", "PROMO", "SPECIAL", "RTTK", "RTTF",
+        "TRAILBLAZER", "CENTURION", "THUNDER", "TOTY", "TOTS", "FUTTIES",
+        "WINTER", "WILDCARD", "FUTURE STAR", "BIRTHDAY", "FANTASY", "POTM",
+        "FLASHBACK", "SHOWDOWN", "RUSH", "SHAPESHIFTER", "GRASSROOT", "IMMORTAL",
+        "DREAMCHASER", "NUMERO", "TRACK STAR", "GLOBETROTTER", "SUCCESSION",
+        "CORNERSTONE", "SCREAM", "FC PRO", "DYNASTY", "RADIOACTIVE", "GOLAZO",
+        "PATH TO GLORY", "MAKE YOUR MARK", "GREATS OF THE GAME", "END OF AN ERA",
+        "ONES TO WATCH", "OTW", "RULEBREAKER", "HEADLINER", "SIGNATURE",
+        "OUT OF POSITION", "VERSUS", "MOMENTS", "STORYLINE", "FOUNDATIONS",
+        "WORLD TOUR", "MODE MASTERY", "UCL", "UEL", "UECL", "LIBERTADORES", "SUDAMERICANA"
+    ]
+    if any(k in t for k in palabras_promo):
+        return "Promo/Especial"
+    return "Normal/Oro"
+
+def normalizar_nombre_completo(nombre_completo):
+    """Normaliza el nombre completo sin tildes ni sufijos de paréntesis para emparejamiento exacto."""
+    nombre_base = str(nombre_completo).split(' (')[0]
+    limpio = sin_tildes(nombre_base).lower()
+    limpio = re.sub(r'\bjr\.?\b', 'junior', limpio)
+    limpio = re.sub(r'\bsr\.?\b', 'senior', limpio)
+    limpio = re.sub(r'\bst\.?\b', 'saint', limpio)
+    palabras = [p for p in re.findall(r'[a-z]+', limpio) if len(p) >= 2]
+    if not palabras:
+        palabras = re.findall(r'[a-z]+', limpio)
+    return "_".join(palabras)
 
 def clave_cruce(nombre_completo):
-    media_match = re.search(r'Media\s*(\d{2})', str(nombre_completo))
-    media = media_match.group(1) if media_match else "00"
-    nombre_base = str(nombre_completo).split(' (')[0]
-    palabras = [p for p in re.findall(r'[A-Za-z]+', sin_tildes(nombre_base).lower()) if len(p) >= 2]
-    if len(palabras) >= 2:
-        identificador = f"{palabras[0]}_{palabras[-1]}"
-    elif palabras:
-        identificador = palabras[-1]
-    else:
-        identificador = sin_tildes(nombre_base).lower().strip()
+    """Clave primaria quirúrgica: nombre completo normalizado + media exacta + categoría de carta."""
+    media = extraer_media_exacta(nombre_completo)
+    if not media:
+        return ""
+    nom_norm = normalizar_nombre_completo(nombre_completo)
+    if not nom_norm:
+        return ""
     cat_ver = categoria_version_carta(nombre_completo)
-    if cat_ver in ("totw", "icon", "hero"):
-        return f"{identificador}_{media}_{cat_ver}"
-    return f"{identificador}_{media}"
+    return f"{nom_norm}|{media}|{cat_ver}"
 
 def clave_cruce_apellido_media(nombre_completo):
-    """Clave secundaria (apellido_media) para emparejar nombres cortos (ej. 'Vini Jr.' vs 'Vinicius Junior') de igual media y categoría."""
-    media_match = re.search(r'Media\s*(\d{2})', str(nombre_completo))
-    media = media_match.group(1) if media_match else "00"
-    nombre_base = str(nombre_completo).split(' (')[0]
-    palabras = [p for p in re.findall(r'[A-Za-z]+', sin_tildes(nombre_base).lower()) if len(p) > 2]
-    apellido = palabras[-1] if palabras else sin_tildes(nombre_base).lower().strip()
+    """Clave secundaria controlada: inicial + apellido + media exacta + categoría (nunca sin media ni cruzando categorías)."""
+    media = extraer_media_exacta(nombre_completo)
+    if not media:
+        return ""
+    nom_norm = normalizar_nombre_completo(nombre_completo)
+    palabras = [p for p in nom_norm.split('_') if p]
+    if not palabras:
+        return ""
     cat_ver = categoria_version_carta(nombre_completo)
-    if cat_ver in ("totw", "icon", "hero"):
-        return f"{apellido}_{media}_{cat_ver}"
-    return f"{apellido}_{media}"
+    if len(palabras) >= 2:
+        identificador = f"{palabras[0][0]}_{palabras[-1]}"
+    else:
+        identificador = palabras[0]
+    return f"{identificador}|{media}|{cat_ver}"
 
 def extraer_respaldo_futbin_historico(df_viejo):
-    """Recorre TODO el historial (no solo el último corte) para rescatar el último precio válido de Futbin de cada carta."""
+    """Recorre TODO el historial para rescatar el último precio válido de Futbin de cada carta con media y categoría válidas."""
     respaldo_por_enlace = {}
     respaldo_por_clave = {}
+    claves_sec_ambiguas = set()
     if df_viejo is None or df_viejo.empty:
         return respaldo_por_enlace, respaldo_por_clave
     try:
@@ -243,19 +276,34 @@ def extraer_respaldo_futbin_historico(df_viejo):
             enl_old = str(r_old.get("Enlace_Futbin", "") or "")
             if p_fb_old <= 0 and "futbin.com" in enl_old:
                 p_fb_old = int(float(r_old.get("Precio_Actual", 0) or 0))
-            if p_fb_old > 0:
-                jug_nom = str(r_old.get("Jugador", "Jugador"))
-                p_con_old = int(float(r_old.get("Precio_Consola", p_fb_old) or p_fb_old))
-                enl_fb_real = enl_old if "futbin.com" in enl_old else f"https://www.futbin.com/players?search={jug_nom.split(' (')[0].replace(' ', '+')}"
-                item_fb = {
-                    "Jugador": jug_nom,
-                    "Enlace": enl_fb_real,
-                    "Precio_Actual": p_fb_old,
-                    "Precio_Consola": p_con_old
-                }
-                respaldo_por_enlace[enl_fb_real] = item_fb
-                respaldo_por_clave[clave_cruce(jug_nom)] = item_fb
-                respaldo_por_clave[clave_cruce_apellido_media(jug_nom)] = item_fb
+            if not es_multiplo_escalon_ea(p_fb_old, PRESUPUESTO_MAXIMO):
+                continue
+            jug_nom = str(r_old.get("Jugador", "Jugador"))
+            if not extraer_media_exacta(jug_nom):
+                continue
+            p_con_old = int(float(r_old.get("Precio_Consola", p_fb_old) or p_fb_old))
+            if not es_multiplo_escalon_ea(p_con_old, PRESUPUESTO_MAXIMO):
+                p_con_old = p_fb_old
+            enl_fb_real = enl_old if "futbin.com" in enl_old else f"https://www.futbin.com/players?search={jug_nom.split(' (')[0].replace(' ', '+')}"
+            item_fb = {
+                "Jugador": jug_nom,
+                "Enlace": enl_fb_real,
+                "Precio_Actual": p_fb_old,
+                "Precio_Consola": p_con_old
+            }
+            respaldo_por_enlace[enl_fb_real] = item_fb
+            c_prim = clave_cruce(jug_nom)
+            if c_prim:
+                respaldo_por_clave[c_prim] = item_fb
+            c_sec = clave_cruce_apellido_media(jug_nom)
+            if c_sec and c_sec != c_prim:
+                prev = respaldo_por_clave.get(c_sec)
+                if prev is not None and prev["Enlace"] != enl_fb_real:
+                    claves_sec_ambiguas.add(c_sec)
+                elif c_sec not in claves_sec_ambiguas:
+                    respaldo_por_clave[c_sec] = item_fb
+        for c_amb in claves_sec_ambiguas:
+            respaldo_por_clave.pop(c_amb, None)
     except Exception:
         pass
     return respaldo_por_enlace, respaldo_por_clave
@@ -263,20 +311,31 @@ def extraer_respaldo_futbin_historico(df_viejo):
 # ==========================================
 # MATEMÁTICA FINANCIERA EA TAX, LAZY & STOP-LOSS (SOPORTE 15M)
 # ==========================================
+def paso_escalon_ea(precio):
+    if precio < 1000:
+        return 50
+    elif precio < 10000:
+        return 100
+    elif precio < 50000:
+        return 250
+    elif precio < 100000:
+        return 500
+    return 1000
+
+def es_multiplo_escalon_ea(precio, presupuesto_max=PRESUPUESTO_MAXIMO):
+    """Valida que un precio sea estrictamente múltiplo de los escalones oficiales del mercado EA FC."""
+    try:
+        p = int(precio)
+    except Exception:
+        return False
+    if not (200 <= p <= presupuesto_max):
+        return False
+    return (p % paso_escalon_ea(p)) == 0
+
 def redondear_escalon_ea(precio, hacia_arriba=False):
     if precio <= 0:
         return 0
-    if precio < 1000:
-        paso = 50
-    elif precio < 10000:
-        paso = 100
-    elif precio < 50000:
-        paso = 250
-    elif precio < 100000:
-        paso = 500
-    else:
-        paso = 1000
-
+    paso = paso_escalon_ea(precio)
     if hacia_arriba:
         return int(math.ceil(precio / paso) * paso)
     return int(math.floor(precio / paso) * paso)
@@ -293,18 +352,39 @@ def calcular_puja_maxima_segura(precio_actual_mercado, roi_objetivo=0.10):
     compra_objetivo = ingreso_neto_actual / (1.0 + roi_objetivo)
     return redondear_escalon_ea(compra_objetivo, hacia_arriba=False)
 
-def calcular_precio_lazy(precio_referencia, precio_pagado=0):
-    base_lazy = precio_referencia * MARGEN_LAZY_BUYER
+def calcular_precio_lazy(precio_referencia, precio_pagado=0, max_hist=0, muestras=0, margen_lazy=MARGEN_LAZY_BUYER):
+    """Calcula el precio Lazy respetando EA Tax (5%), rentabilidad mínima y techo histórico firme (max_hist)."""
+    if precio_referencia <= 0:
+        return 0
+    base_lazy = precio_referencia * margen_lazy
     if precio_pagado > 0:
         min_rentable = (precio_pagado * 1.10) / 0.95
         base_lazy = max(base_lazy, min_rentable)
-    return redondear_escalon_ea(base_lazy, hacia_arriba=True)
+    piso_empate = calcular_break_even(precio_pagado if precio_pagado > 0 else precio_referencia)
+    lazy_ea = redondear_escalon_ea(base_lazy, hacia_arriba=True)
+
+    # Respetar techo firme reciente (no sugerir Lazy por encima de max_hist si hay historial suficiente)
+    if muestras >= 3 and max_hist > 0 and lazy_ea > max_hist:
+        techo_ea = redondear_escalon_ea(max_hist, hacia_arriba=False)
+        if techo_ea >= piso_empate:
+            return techo_ea
+        return piso_empate
+
+    return max(lazy_ea, piso_empate)
 
 def calcular_stop_loss_sugerido(precio_pagado):
     if precio_pagado <= 0:
         return 0
     venta_emergencia = (precio_pagado * (1.0 + (STOP_LOSS_PCT / 100.0))) / 0.95
     return redondear_escalon_ea(venta_emergencia, hacia_arriba=False)
+
+def ganancia_neta_minima_real(precio_actual):
+    """Umbral mínimo de ganancia neta proyectada Post-Tax (5%) para eliminar ruido en cartas baratas."""
+    if precio_actual < 5000:
+        return 350
+    elif precio_actual <= 25000:
+        return 750
+    return 1500
 
 def calcular_horas_inmovilizacion(fecha_compra_str):
     if not fecha_compra_str or str(fecha_compra_str).strip() == "":
@@ -316,51 +396,79 @@ def calcular_horas_inmovilizacion(fecha_compra_str):
     except Exception:
         return 0.0
 
+def _limpiar_ruido_dom_precio(texto):
+    """Elimina tokens típicos de estadísticas in-game, likes, contratos, medidas e IDs antes de parsear monedas."""
+    t = str(texto or "")
+    t = re.sub(r'\b(?:IGS|BGS|PAC|SHO|PAS|DRI|DEF|PHY|OVR|RATING|WF|SM|SKILL|CONTRACTS?|LIKES?|VIEWS?|COMMENTS?|XP|PTS|ID)\s*[:#]?\s*\d+(?:[.,]\d+)?[KkMm]?\b', ' ', t, flags=re.IGNORECASE)
+    t = re.sub(r'\b\d+(?:[.,]\d+)?[KkMm]?\s*(?:IGS|BGS|LIKES?|VIEWS?|COMMENTS?|CONTRACTS?|CM|KG|FT|LB|XP|PTS|%)\b', ' ', t, flags=re.IGNORECASE)
+    t = re.sub(r'#\d+\b', ' ', t)
+    return t
+
 def _parsear_valor_monedas_km(fuente_texto, presupuesto_max):
-    """Convierte con exactitud sufijos K/M (ej. 14.5K -> 14500, 1.25M -> 1250000), miles con coma/punto y enteros múltiplos de escalón EA."""
+    """Extrae precios K/M, con comas o enteros exigiendo estrictamente múltiplos válidos de los escalones EA FC."""
     if not fuente_texto:
         return 0
-    texto_norm = str(fuente_texto).strip()
+    texto_norm = _limpiar_ruido_dom_precio(fuente_texto).strip()
+    if not texto_norm:
+        return 0
 
-    # 1. Sufijos K y M (ej. 14.5K, 1,25M, 350k)
-    precios_km = re.findall(r'\b(\d+(?:[.,]\d+)?)\s*([KkMm])\b', texto_norm)
+    # 1. Sufijos K y M (ej. 14.5K -> 14500, 1.25M -> 1250000)
+    precios_km = re.findall(r'(?<!\d)(\d+(?:[.,]\d+)?)\s*([KkMm])\b', texto_norm)
     for num_s, unidad in precios_km:
         num_clean = float(num_s.replace(',', '.'))
         mult = 1000000 if unidad.upper() == 'M' else 1000
         val = int(round(num_clean * mult))
         if val > presupuesto_max:
             return -1
-        if 200 <= val <= presupuesto_max:
+        if es_multiplo_escalon_ea(val, presupuesto_max):
             return val
+        # Tolerancia controlada solo para abreviaturas K con 1 decimal en rango 10k-50k (ej. 14.3K -> 14250)
+        if unidad.upper() == 'K' and 10000 <= val < 50000 and ('.' in num_s or ',' in num_s):
+            ajustado = int(round(val / 250.0) * 250)
+            if abs(ajustado - val) <= 50 and es_multiplo_escalon_ea(ajustado, presupuesto_max):
+                return ajustado
 
-    # 2. Números con separadores de miles por comas (ej. 14,500 o 1,250,000)
+    # 2. Números con separadores de miles por comas (ej. 14,500 o 1,250,000) -> estricto múltiplo EA
     precios_comas = re.findall(r'\b(\d{1,3}(?:,\d{3})+)\b', texto_norm)
     for p_c in precios_comas:
         val = int(p_c.replace(',', ''))
         if val > presupuesto_max:
             return -1
-        if 200 <= val <= presupuesto_max:
+        if es_multiplo_escalon_ea(val, presupuesto_max):
             return val
 
-    # 3. Enteros directos múltiplos de 50 (escalón mínimo de EA)
+    # 3. Enteros directos -> estricto múltiplo de escalón EA (descarta IGS como 2150, contratos e IDs)
     enteros = re.findall(r'\b(\d{3,8})\b', texto_norm)
     for ent in enteros:
         val = int(ent)
-        if 200 <= val <= presupuesto_max and (val % 50 == 0):
+        if val > presupuesto_max:
+            continue
+        if es_multiplo_escalon_ea(val, presupuesto_max):
             return val
     return 0
 
 def extraer_precio_robusto(texto_precio, texto_fila, presupuesto_max):
-    for fuente in (texto_precio, texto_fila):
-        if not fuente:
-            continue
-        val = _parsear_valor_monedas_km(fuente, presupuesto_max)
-        if val > 0:
-            return val
+    """Parsea primero el nodo aislado de precio y solo recurre a texto_fila si el nodo estaba vacío."""
+    if texto_precio:
+        val_p = _parsear_valor_monedas_km(texto_precio, presupuesto_max)
+        if val_p == -1:
+            return 0
+        if val_p > 0:
+            return val_p
+    if texto_fila and texto_fila != texto_precio:
+        val_f = _parsear_valor_monedas_km(texto_fila, presupuesto_max)
+        if val_f > 0:
+            return val_f
     return 0
 
-def extraer_precio_carta_unica_gg(texto_card, presupuesto_max):
-    """Extrae el precio únicamente dentro de la caja individual de cada carta en FUT.GG (Soporta hasta 15M)."""
+def extraer_precio_carta_unica_gg(texto_card, presupuesto_max, texto_precio=""):
+    """Extrae el precio únicamente dentro de la caja individual de cada carta en FUT.GG validando escalón EA."""
+    if texto_precio:
+        val_p = _parsear_valor_monedas_km(texto_precio, presupuesto_max)
+        if val_p == -1:
+            return 0
+        if val_p > 0:
+            return val_p
     if not texto_card:
         return 0
     val = _parsear_valor_monedas_km(texto_card, presupuesto_max)
@@ -387,32 +495,55 @@ def calcular_estadisticas_historicas(df_viejo):
     return stats
 
 # ==========================================
-# MOTOR DE CLASIFICACIÓN DE TRADING
+# MOTOR DE CLASIFICACIÓN DE TRADING (CALIBRACIÓN QUIRÚRGICA)
 # ==========================================
 def diagnosticar_senal_trading(p_act, p_ant, min_hist, max_hist, prom_hist, muestras, p_fb, p_gg):
+    if p_act <= 0:
+        return "⚪ Rango Neutro"
+
+    # 1. Filtro de desfase extremo (>45%) entre Futbin y FUT.GG: marcar como posible desfase de versión o precio viejo
+    brecha_dual_pct = 0.0
+    ganancia_arb_neta = 0
+    if p_fb > 0 and p_gg > 0:
+        menor_d = min(p_fb, p_gg)
+        mayor_d = max(p_fb, p_gg)
+        brecha_dual_pct = ((mayor_d - menor_d) / menor_d) * 100.0
+        ganancia_arb_neta = int(round((mayor_d * 0.95) - menor_d))
+        if brecha_dual_pct > UMBRAL_DESFASE_VERSION_PCT:
+            return "🔎 Posible Desfase Versión/Precio (>45%)"
+
     var_reciente = (((p_act - p_ant) / p_ant) * 100.0) if p_ant > 0 else 0.0
     desc_vs_prom = (((p_act - prom_hist) / prom_hist) * 100.0) if prom_hist > 0 else 0.0
     amplitud_pct = (((max_hist - min_hist) / min_hist) * 100.0) if min_hist > 0 else 0.0
 
-    if var_reciente <= -22.0 and p_act < min_hist and muestras >= 3:
+    # 2. Protección prioritaria contra Cuchillo Cayendo (nunca etiquetar compra en caída libre)
+    if (var_reciente <= -22.0 and p_act < min_hist and muestras >= 3) or (var_reciente <= -25.0 and muestras >= 2):
         return "⚠️ Cuchillo Cayendo (Esperar Piso)"
 
-    if muestras >= 2 and amplitud_pct >= 12.0 and desc_vs_prom <= -5.0 and var_reciente >= -18.0:
+    # 3. Exigencia de ganancia neta mínima real Post-Tax (evita ruido de monedas bajas)
+    min_ganancia = ganancia_neta_minima_real(p_act)
+    ref_rebote_prom = min(prom_hist, max_hist) if (prom_hist > 0 and max_hist > 0) else prom_hist
+    ganancia_proy_prom = int(round((ref_rebote_prom * 0.95) - p_act)) if ref_rebote_prom > 0 else 0
+    ganancia_proy_ant = int(round((p_ant * 0.95) - p_act)) if p_ant > 0 else 0
+
+    if muestras >= 2 and amplitud_pct >= 12.0 and desc_vs_prom <= -5.0 and var_reciente >= -18.0 and ganancia_proy_prom >= min_ganancia:
         return "⚡ Flipping Rápido (Alta Liquidez)"
 
-    if (muestras >= 2 and p_act <= int(min_hist * 1.03) and desc_vs_prom <= -6.0):
+    if muestras >= 2 and p_act <= int(min_hist * 1.03) and desc_vs_prom <= -6.0 and var_reciente > -22.0 and ganancia_proy_prom >= min_ganancia:
         return "💎 Rebote en Suelo Firme"
 
     if p_fb > 0 and p_gg > 0:
         menor_d = min(p_fb, p_gg)
-        mayor_d = max(p_fb, p_gg)
-        if ((mayor_d * 0.95) - menor_d) >= 500 and ((mayor_d - menor_d) / menor_d * 100) >= 8.0:
+        if 8.0 <= brecha_dual_pct <= UMBRAL_DESFASE_VERSION_PCT and ganancia_arb_neta >= ganancia_neta_minima_real(menor_d):
             return "⚡ Arbitraje Directo FB/GG"
 
-    if var_reciente <= -5.0:
+    if var_reciente <= -5.0 and max(ganancia_proy_prom, ganancia_proy_ant) >= min_ganancia:
         return "🟢 Caída Moderada (Puja)"
-    if var_reciente >= 6.0:
+
+    ganancia_subida = int(round((p_act * 0.95) - p_ant)) if p_ant > 0 else 0
+    if var_reciente >= 6.0 and ganancia_subida >= min_ganancia:
         return "🔴 En Subida (Tomar Ganancia)"
+
     return "⚪ Rango Neutro"
 
 def obtener_radar_ciclo_futchampions(datos_jugadores):
@@ -438,6 +569,7 @@ def obtener_radar_ciclo_futchampions(datos_jugadores):
         if 18000 <= int(j.get("Precio_Actual", 0)) <= PRESUPUESTO_MAXIMO
         and float(j.get("Variacion_Bruta_%", 0)) <= -2.0
         and "⚠️" not in str(j.get("Senal_Trading", ""))
+        and "🔎" not in str(j.get("Senal_Trading", ""))
     ]
     meta_cands = sorted(meta_cands, key=lambda x: float(x.get("Variacion_Bruta_%", 0)))[:3]
 
@@ -466,7 +598,15 @@ def detectar_links_domino(datos_unificados, df_evos):
 
     cartas_motor = [
         j for j in datos_unificados
-        if float(j.get("Variacion_Bruta_%", 0)) >= 20.0 or (int(j.get("Precio_Futbin", 0)) > 0 and int(j.get("Precio_FUTGG", 0)) > int(j.get("Precio_Futbin", 0)) * 1.35)
+        if "🔎" not in str(j.get("Senal_Trading", ""))
+        and (
+            float(j.get("Variacion_Bruta_%", 0)) >= 20.0
+            or (
+                int(j.get("Precio_Futbin", 0)) > 0
+                and int(j.get("Precio_FUTGG", 0)) > int(j.get("Precio_Futbin", 0)) * 1.35
+                and ((int(j.get("Precio_FUTGG", 0)) - int(j.get("Precio_Futbin", 0))) / max(1, int(j.get("Precio_Futbin", 0))) * 100.0) <= UMBRAL_DESFASE_VERSION_PCT
+            )
+        )
     ]
 
     if not cartas_motor:
@@ -474,9 +614,9 @@ def detectar_links_domino(datos_unificados, df_evos):
 
     medias_calientes = set()
     for cm in cartas_motor[:8]:
-        m_match = re.search(r'Media\s*(\d{2})', str(cm.get("Jugador", "")))
+        m_match = extraer_media_exacta(cm.get("Jugador", ""))
         if m_match:
-            medias_calientes.add(int(m_match.group(1)))
+            medias_calientes.add(int(m_match))
 
     if not medias_calientes:
         medias_calientes = {82, 83, 84}
@@ -487,11 +627,15 @@ def detectar_links_domino(datos_unificados, df_evos):
         var_b = float(j.get("Variacion_Bruta_%", 0))
         if not (700 <= p_act <= 9500 and -10.0 <= var_b <= 3.0):
             continue
-        m_match = re.search(r'Media\s*(\d{2})', str(j.get("Jugador", "")))
-        med_j = int(m_match.group(1)) if m_match else 0
+        m_match = extraer_media_exacta(j.get("Jugador", ""))
+        med_j = int(m_match) if m_match else 0
         if med_j in medias_calientes:
             puja_d = calcular_puja_maxima_segura(p_act, 0.10)
-            lazy_d = calcular_precio_lazy(p_act)
+            lazy_d = calcular_precio_lazy(
+                p_act,
+                max_hist=int(j.get("Precio_Max_Hist", 0) or 0),
+                muestras=int(j.get("Muestras_Hist", 0) or 0)
+            )
             candidatos_domino.append({
                 "Jugador_Dormido": j["Jugador"].split(" (")[0] + f" (Media {med_j})",
                 "Media": med_j,
@@ -527,6 +671,8 @@ def armar_resumen_flipping_gangas(datos_finales):
     gangas_flip = [
         j for j in datos_finales
         if any(k in str(j.get("Senal_Trading", "")) for k in ["⚡", "💎", "🟢"])
+        and "🔎" not in str(j.get("Senal_Trading", ""))
+        and "⚠️" not in str(j.get("Senal_Trading", ""))
         and float(j.get("Variacion_Bruta_%", 0)) < 0
     ]
     gangas_flip = sorted(gangas_flip, key=lambda x: float(x.get("Variacion_Bruta_%", 0)))[:6]
@@ -565,130 +711,172 @@ def armar_resumen_flipping_gangas(datos_finales):
     return txt
 
 # ==========================================
-# FUSIÓN DE BASES: FUTBIN (5000) + FUT.GG (5000)
+# FUSIÓN DE BASES: FUTBIN (5000) + FUT.GG (5000) — CRUCE QUIRÚRGICO
 # ==========================================
+def _construir_registro_unificado(
+    fecha_actual, nombre_jug_final, p_fb, p_gg, p_con,
+    enlace_fb, enlace_gg, historial_precios, stats_historicas
+):
+    """Unifica el cálculo financiero, histórico y de señales para cualquier carta (base FB o exclusiva GG)."""
+    if p_fb > 0 and p_gg > 0:
+        if p_gg < p_fb:
+            p_act = p_gg
+            fuente_optima = "GG"
+            enlace_optimo = enlace_gg
+        elif p_fb < p_gg:
+            p_act = p_fb
+            fuente_optima = "FB"
+            enlace_optimo = enlace_fb
+        else:
+            p_act = p_fb
+            fuente_optima = "FB=GG"
+            enlace_optimo = enlace_fb
+    elif p_fb > 0:
+        p_act = p_fb
+        fuente_optima = "FB"
+        enlace_optimo = enlace_fb
+    else:
+        p_act = p_gg
+        fuente_optima = "GG"
+        enlace_optimo = enlace_gg
+
+    clave_hist = enlace_fb if enlace_fb in historial_precios else (enlace_gg if enlace_gg in historial_precios else enlace_fb)
+    es_nueva = (enlace_fb not in historial_precios) and (enlace_gg not in historial_precios)
+    precio_anterior = int(historial_precios.get(clave_hist, p_act) or p_act)
+    var_b = (((p_act - precio_anterior) / precio_anterior) * 100.0) if precio_anterior > 0 else 0.0
+    ganancia_neta = int(round((p_act * 0.95) - precio_anterior)) if precio_anterior > 0 and p_act > precio_anterior else 0
+    var_n = (ganancia_neta / precio_anterior) * 100.0 if precio_anterior > 0 else 0.0
+
+    st_h = stats_historicas.get(enlace_fb) or stats_historicas.get(enlace_gg) or {"min": p_act, "max": p_act, "prom": p_act, "count": 1}
+    min_hist = min(st_h["min"], p_act)
+    max_hist = max(st_h["max"], p_act)
+    prom_hist = st_h["prom"]
+    muestras = int(st_h["count"])
+    descuento_vs_prom = (((p_act - prom_hist) / prom_hist) * 100.0) if prom_hist > 0 else 0.0
+
+    if muestras >= 2 and p_act <= min_hist and p_act < prom_hist:
+        estado_hist = "💎 MÍNIMO HISTÓRICO"
+    elif descuento_vs_prom <= -12.0:
+        estado_hist = f"📉 {descuento_vs_prom:.0f}% vs Prom"
+    else:
+        estado_hist = "Normal"
+
+    senal_tr = diagnosticar_senal_trading(p_act, precio_anterior, min_hist, max_hist, prom_hist, muestras, p_fb, p_gg)
+
+    if "⚠️" in senal_tr:
+        accion = "⚠️ EVITAR (CAÍDA)"
+    elif "🔎" in senal_tr:
+        accion = "🔎 REVISAR DESFASE"
+    elif any(k in senal_tr for k in ("⚡", "💎", "🟢")):
+        accion = "🟢 COMPRAR"
+    elif "🔴" in senal_tr or (var_n >= 5.0 and ganancia_neta >= ganancia_neta_minima_real(precio_anterior)):
+        accion = "🔴 VENDER"
+    elif es_nueva:
+        accion = "🆕 NUEVO"
+    else:
+        accion = "⚪ MANTENER"
+
+    return {
+        "Fecha": fecha_actual,
+        "Jugador": nombre_jug_final,
+        "Categoria_Carta": categoria_version_carta(nombre_jug_final),
+        "Precio_Anterior": precio_anterior,
+        "Precio_Actual": p_act,
+        "Precio_Consola": p_con,
+        "Precio_Futbin": p_fb,
+        "Precio_FUTGG": p_gg,
+        "Fuente_Mejor_Precio": fuente_optima,
+        "Precio_Min_Hist": min_hist,
+        "Precio_Max_Hist": max_hist,
+        "Precio_Prom_Hist": prom_hist,
+        "Muestras_Hist": muestras,
+        "Estado_Historico": estado_hist,
+        "Senal_Trading": senal_tr,
+        "Puja_Max_10%_ROI": calcular_puja_maxima_segura(p_act, 0.10),
+        "Break_Even_5%": calcular_break_even(p_act),
+        "Precio_Lazy_Sugerido": calcular_precio_lazy(p_act, max_hist=max_hist, muestras=muestras),
+        "Variacion_Bruta_%": round(var_b, 2),
+        "Beneficio_Neto_Mnds": round(ganancia_neta),
+        "Variacion_Neta_%": round(var_n, 2),
+        "Accion": accion,
+        "Enlace_Futbin": enlace_fb,
+        "Enlace_FUTGG": enlace_gg,
+        "Enlace_Optimo": enlace_optimo
+    }
+
 def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_historicas, fecha_actual, respaldo_fb_clave=None):
     respaldo_fb_clave = respaldo_fb_clave or {}
     mapa_gg_clave = {}
     mapa_gg_sec = {}
-    mapa_gg_apellido = {}
+    claves_sec_ambiguas = set()
+
     for g in (datos_gg or []):
-        if g.get("Media") != "??":
-            mapa_gg_clave[g["Clave"]] = g
-            c_sec = clave_cruce_apellido_media(g.get("Jugador_GG", ""))
-            if c_sec not in mapa_gg_sec:
+        media_g = extraer_media_exacta(g.get("Jugador_GG", "")) or (str(g.get("Media", "")) if str(g.get("Media", "")).isdigit() and 45 <= int(g.get("Media", "0")) <= 99 else "")
+        if not media_g:
+            continue
+        c_prim = g.get("Clave") or clave_cruce(g.get("Jugador_GG", ""))
+        if c_prim:
+            mapa_gg_clave[c_prim] = g
+        c_sec = clave_cruce_apellido_media(g.get("Jugador_GG", ""))
+        if c_sec and c_sec != c_prim:
+            if c_sec in mapa_gg_sec and mapa_gg_sec[c_sec].get("Enlace_GG") != g.get("Enlace_GG"):
+                claves_sec_ambiguas.add(c_sec)
+            elif c_sec not in claves_sec_ambiguas:
                 mapa_gg_sec[c_sec] = g
-        palabras_g = [p for p in g["Nombre_Puro"].split() if len(p) > 2]
-        if palabras_g:
-            mapa_gg_apellido[palabras_g[-1]] = g
+
+    for c_amb in claves_sec_ambiguas:
+        mapa_gg_sec.pop(c_amb, None)
 
     claves_gg_usadas = set()
     datos_unificados = []
+    desfases_version_detectados = 0
 
     for jug in (jugadores_fb or []):
         enlace_fb = jug["Enlace"]
         p_fb = int(jug["Precio_Actual"])
+        if not es_multiplo_escalon_ea(p_fb, PRESUPUESTO_MAXIMO):
+            continue
         p_con_fb = int(jug.get("Precio_Consola", p_fb) or p_fb)
-        c = clave_cruce(jug["Jugador"])
-        c_sec_fb = clave_cruce_apellido_media(jug["Jugador"])
+        if not es_multiplo_escalon_ea(p_con_fb, PRESUPUESTO_MAXIMO):
+            p_con_fb = p_fb
 
-        g = mapa_gg_clave.get(c) or mapa_gg_sec.get(c_sec_fb)
-        if not g:
-            ap = c_sec_fb.split('_')[0]
-            g_cand = mapa_gg_apellido.get(ap)
-            if g_cand and g_cand.get("Media") == "??":
-                g = g_cand
+        nombre_jug_final = jug["Jugador"]
+        media_fb = extraer_media_exacta(nombre_jug_final)
+        cat_fb = categoria_version_carta(nombre_jug_final)
+        c = clave_cruce(nombre_jug_final)
+        c_sec_fb = clave_cruce_apellido_media(nombre_jug_final)
+
+        # Solo cruzar si ambas cartas tienen media exacta y categoría idéntica (nunca Oro vs Especial ni sin media)
+        g = None
+        if media_fb and c:
+            g_cand = mapa_gg_clave.get(c) or (mapa_gg_sec.get(c_sec_fb) if c_sec_fb else None)
+            if g_cand:
+                media_gg = extraer_media_exacta(g_cand.get("Jugador_GG", "")) or str(g_cand.get("Media", ""))
+                cat_gg = categoria_version_carta(g_cand.get("Jugador_GG", ""))
+                if media_gg == media_fb and cat_gg == cat_fb:
+                    g = g_cand
 
         p_gg = 0
         enlace_gg = ""
         tipo_gg = ""
         if g and g.get("Enlace_GG", "") not in claves_gg_usadas:
-            p_gg = int(g.get("Precio_FUTGG", 0))
-            enlace_gg = g.get("Enlace_GG", "")
-            tipo_gg = str(g.get("Tipo_Carta", "") or "")
-            claves_gg_usadas.add(enlace_gg)
+            p_gg_cand = int(g.get("Precio_FUTGG", 0))
+            if es_multiplo_escalon_ea(p_gg_cand, PRESUPUESTO_MAXIMO):
+                p_gg = p_gg_cand
+                enlace_gg = g.get("Enlace_GG", "")
+                tipo_gg = str(g.get("Tipo_Carta", "") or "")
+                claves_gg_usadas.add(enlace_gg)
 
-        nombre_jug_final = jug["Jugador"]
-        if tipo_gg and "TOTW" in tipo_gg.upper() and "TOTW" not in nombre_jug_final.upper() and "IF" not in nombre_jug_final.upper():
+        if tipo_gg and "TOTW" in tipo_gg.upper() and cat_fb == "TOTW/IF" and "TOTW" not in nombre_jug_final.upper():
             nombre_jug_final = re.sub(r'\((Media\s*\d{2})[^)]*\)', r'(\1 - TOTW IF)', nombre_jug_final)
 
-        if p_fb > 0 and p_gg > 0:
-            if p_gg < p_fb:
-                p_act = p_gg
-                fuente_optima = "GG"
-                enlace_optimo = enlace_gg
-            elif p_fb < p_gg:
-                p_act = p_fb
-                fuente_optima = "FB"
-                enlace_optimo = enlace_fb
-            else:
-                p_act = p_fb
-                fuente_optima = "FB=GG"
-                enlace_optimo = enlace_fb
-        elif p_fb > 0:
-            p_act = p_fb
-            fuente_optima = "FB"
-            enlace_optimo = enlace_fb
-        else:
-            p_act = p_gg
-            fuente_optima = "GG"
-            enlace_optimo = enlace_gg
-
-        precio_anterior = int(historial_precios.get(enlace_fb, p_act) or p_act)
-        var_b = (((p_act - precio_anterior) / precio_anterior) * 100) if precio_anterior > 0 else 0.0
-        ganancia_neta = (p_act * 0.95) - precio_anterior if precio_anterior > 0 and p_act > precio_anterior else 0
-        var_n = (ganancia_neta / precio_anterior) * 100 if precio_anterior > 0 else 0.0
-
-        st = stats_historicas.get(enlace_fb, {"min": p_act, "max": p_act, "prom": p_act, "count": 1})
-        min_hist = min(st["min"], p_act)
-        max_hist = max(st["max"], p_act)
-        prom_hist = st["prom"]
-        descuento_vs_prom = (((p_act - prom_hist) / prom_hist) * 100) if prom_hist > 0 else 0.0
-
-        if st["count"] >= 2 and p_act <= min_hist and p_act < prom_hist:
-            estado_hist = "💎 MÍNIMO HISTÓRICO"
-        elif descuento_vs_prom <= -12.0:
-            estado_hist = f"📉 {descuento_vs_prom:.0f}% vs Prom"
-        else:
-            estado_hist = "Normal"
-
-        senal_tr = diagnosticar_senal_trading(p_act, precio_anterior, min_hist, max_hist, prom_hist, st["count"], p_fb, p_gg)
-
-        if "⚠️" in senal_tr:
-            accion = "⚠️ EVITAR (CAÍDA)"
-        elif var_b <= -5.0 or (estado_hist == "💎 MÍNIMO HISTÓRICO" and descuento_vs_prom <= -8.0) or "⚡" in senal_tr:
-            accion = "🟢 COMPRAR"
-        elif var_n >= 5.0:
-            accion = "🔴 VENDER"
-        elif enlace_fb not in historial_precios:
-            accion = "🆕 NUEVO"
-        else:
-            accion = "⚪ MANTENER"
-
-        datos_unificados.append({
-            "Fecha": fecha_actual,
-            "Jugador": nombre_jug_final,
-            "Precio_Anterior": precio_anterior,
-            "Precio_Actual": p_act,
-            "Precio_Consola": p_con_fb,
-            "Precio_Futbin": p_fb,
-            "Precio_FUTGG": p_gg,
-            "Fuente_Mejor_Precio": fuente_optima,
-            "Precio_Min_Hist": min_hist,
-            "Precio_Prom_Hist": prom_hist,
-            "Estado_Historico": estado_hist,
-            "Senal_Trading": senal_tr,
-            "Puja_Max_10%_ROI": calcular_puja_maxima_segura(p_act, 0.10),
-            "Break_Even_5%": calcular_break_even(p_act),
-            "Precio_Lazy_Sugerido": calcular_precio_lazy(p_act),
-            "Variacion_Bruta_%": round(var_b, 2),
-            "Beneficio_Neto_Mnds": round(ganancia_neta),
-            "Variacion_Neta_%": round(var_n, 2),
-            "Accion": accion,
-            "Enlace_Futbin": enlace_fb,
-            "Enlace_FUTGG": enlace_gg,
-            "Enlace_Optimo": enlace_optimo
-        })
+        reg = _construir_registro_unificado(
+            fecha_actual, nombre_jug_final, p_fb, p_gg, p_con_fb,
+            enlace_fb, enlace_gg, historial_precios, stats_historicas
+        )
+        if "🔎" in reg["Senal_Trading"]:
+            desfases_version_detectados += 1
+        datos_unificados.append(reg)
 
     exclusivos_gg = 0
     for g in (datos_gg or []):
@@ -696,94 +884,43 @@ def unificar_bases_mercado(jugadores_fb, datos_gg, historial_precios, stats_hist
         if not enlace_gg or enlace_gg in claves_gg_usadas:
             continue
         p_gg = int(g.get("Precio_FUTGG", 0))
-        if p_gg <= 0 or g.get("Media") == "??":
+        media_g = extraer_media_exacta(g.get("Jugador_GG", "")) or (str(g.get("Media", "")) if str(g.get("Media", "")).isdigit() and 45 <= int(g.get("Media", "0")) <= 99 else "")
+        if not es_multiplo_escalon_ea(p_gg, PRESUPUESTO_MAXIMO) or not media_g:
             continue
 
         exclusivos_gg += 1
-        etiqueta_gg = str(g.get("Tipo_Carta", "") or "FUT.GG").strip()
-        nombre_gg_full = f"{g['Jugador_GG'].split(' (')[0]} (Media {g['Media']} - {etiqueta_gg})"
+        etiqueta_gg = str(g.get("Tipo_Carta", "") or "Normal/Oro").strip()
+        nombre_gg_full = f"{g['Jugador_GG'].split(' (')[0]} (Media {media_g} - {etiqueta_gg})"
+        cat_gg = categoria_version_carta(nombre_gg_full)
 
-        # Si existe precio previo de Futbin en el respaldo histórico para esta clave o clave secundaria, lo rescatamos
-        fb_hist_item = respaldo_fb_clave.get(g.get("Clave", "")) or respaldo_fb_clave.get(clave_cruce_apellido_media(nombre_gg_full))
+        # Rescatar precio previo de Futbin SOLO si coincide exactamente en media y categoría
+        c_gg_prim = clave_cruce(nombre_gg_full)
+        c_gg_sec = clave_cruce_apellido_media(nombre_gg_full)
+        fb_hist_cand = respaldo_fb_clave.get(c_gg_prim) or (respaldo_fb_clave.get(c_gg_sec) if c_gg_sec else None)
+        fb_hist_item = None
+        if fb_hist_cand:
+            med_res = extraer_media_exacta(fb_hist_cand.get("Jugador", ""))
+            cat_res = categoria_version_carta(fb_hist_cand.get("Jugador", ""))
+            if med_res == media_g and cat_res == cat_gg:
+                fb_hist_item = fb_hist_cand
+
         p_fb_rescatado = int(fb_hist_item["Precio_Actual"]) if fb_hist_item else 0
+        if p_fb_rescatado > 0 and not es_multiplo_escalon_ea(p_fb_rescatado, PRESUPUESTO_MAXIMO):
+            p_fb_rescatado = 0
         p_con_rescatado = int(fb_hist_item.get("Precio_Consola", p_gg)) if fb_hist_item else p_gg
+        if not es_multiplo_escalon_ea(p_con_rescatado, PRESUPUESTO_MAXIMO):
+            p_con_rescatado = p_gg
         enlace_fb_rescatado = fb_hist_item["Enlace"] if (fb_hist_item and "futbin.com" in str(fb_hist_item.get("Enlace", ""))) else enlace_gg
 
-        if p_fb_rescatado > 0:
-            if p_gg < p_fb_rescatado:
-                p_act_gg = p_gg
-                fuente_gg = "GG"
-                enlace_opt_gg = enlace_gg
-            elif p_fb_rescatado < p_gg:
-                p_act_gg = p_fb_rescatado
-                fuente_gg = "FB"
-                enlace_opt_gg = enlace_fb_rescatado
-            else:
-                p_act_gg = p_gg
-                fuente_gg = "FB=GG"
-                enlace_opt_gg = enlace_fb_rescatado
-        else:
-            p_act_gg = p_gg
-            fuente_gg = "GG"
-            enlace_opt_gg = enlace_gg
+        reg_gg = _construir_registro_unificado(
+            fecha_actual, nombre_gg_full, p_fb_rescatado, p_gg, p_con_rescatado,
+            enlace_fb_rescatado, enlace_gg, historial_precios, stats_historicas
+        )
+        if "🔎" in reg_gg["Senal_Trading"]:
+            desfases_version_detectados += 1
+        datos_unificados.append(reg_gg)
 
-        precio_anterior = int(historial_precios.get(enlace_gg, historial_precios.get(enlace_fb_rescatado, p_act_gg)) or p_act_gg)
-        var_b = (((p_act_gg - precio_anterior) / precio_anterior) * 100) if precio_anterior > 0 else 0.0
-        ganancia_neta = (p_act_gg * 0.95) - precio_anterior if precio_anterior > 0 and p_act_gg > precio_anterior else 0
-        var_n = (ganancia_neta / precio_anterior) * 100 if precio_anterior > 0 else 0.0
-
-        st = stats_historicas.get(enlace_gg, stats_historicas.get(enlace_fb_rescatado, {"min": p_act_gg, "max": p_act_gg, "prom": p_act_gg, "count": 1}))
-        min_hist = min(st["min"], p_act_gg)
-        max_hist = max(st["max"], p_act_gg)
-        prom_hist = st["prom"]
-        descuento_vs_prom = (((p_act_gg - prom_hist) / prom_hist) * 100) if prom_hist > 0 else 0.0
-
-        if st["count"] >= 2 and p_act_gg <= min_hist and p_act_gg < prom_hist:
-            estado_hist = "💎 MÍNIMO HISTÓRICO"
-        elif descuento_vs_prom <= -12.0:
-            estado_hist = f"📉 {descuento_vs_prom:.0f}% vs Prom"
-        else:
-            estado_hist = "Normal"
-
-        senal_tr = diagnosticar_senal_trading(p_act_gg, precio_anterior, min_hist, max_hist, prom_hist, st["count"], p_fb_rescatado, p_gg)
-
-        if "⚠️" in senal_tr:
-            accion = "⚠️ EVITAR (CAÍDA)"
-        elif var_b <= -5.0 or (estado_hist == "💎 MÍNIMO HISTÓRICO" and descuento_vs_prom <= -8.0) or "⚡" in senal_tr:
-            accion = "🟢 COMPRAR"
-        elif var_n >= 5.0:
-            accion = "🔴 VENDER"
-        elif enlace_gg not in historial_precios and enlace_fb_rescatado not in historial_precios:
-            accion = "🆕 NUEVO"
-        else:
-            accion = "⚪ MANTENER"
-
-        datos_unificados.append({
-            "Fecha": fecha_actual,
-            "Jugador": nombre_gg_full,
-            "Precio_Anterior": precio_anterior,
-            "Precio_Actual": p_act_gg,
-            "Precio_Consola": p_con_rescatado,
-            "Precio_Futbin": p_fb_rescatado,
-            "Precio_FUTGG": p_gg,
-            "Fuente_Mejor_Precio": fuente_gg,
-            "Precio_Min_Hist": min_hist,
-            "Precio_Prom_Hist": prom_hist,
-            "Estado_Historico": estado_hist,
-            "Senal_Trading": senal_tr,
-            "Puja_Max_10%_ROI": calcular_puja_maxima_segura(p_act_gg, 0.10),
-            "Break_Even_5%": calcular_break_even(p_act_gg),
-            "Precio_Lazy_Sugerido": calcular_precio_lazy(p_act_gg),
-            "Variacion_Bruta_%": round(var_b, 2),
-            "Beneficio_Neto_Mnds": round(ganancia_neta),
-            "Variacion_Neta_%": round(var_n, 2),
-            "Accion": accion,
-            "Enlace_Futbin": enlace_fb_rescatado,
-            "Enlace_FUTGG": enlace_gg,
-            "Enlace_Optimo": enlace_opt_gg
-        })
-
-    print(f"🔗 Base Dual Masiva Unificada: {len(datos_unificados)} cartas totales ({len(jugadores_fb)} base FB + {exclusivos_gg} exclusivas de FUT.GG).")
+    print(f"🔗 Base Dual Masiva Unificada: {len(datos_unificados)} cartas totales ({len(jugadores_fb)} base FB + {exclusivos_gg} exclusivas GG | {desfases_version_detectados} desfases >45% marcados).")
     return datos_unificados
 
 # ==========================================
@@ -806,6 +943,18 @@ def clasificar_estrategia_automatica(nombre_jugador, precio_pagado, datos_recien
     if precio_pagado <= TOPE_PRECIO_BASE_EVO:
         return "Evolución / Hype"
     return "Flipping Meta"
+
+def precio_mercado_seguro_carta(match, fallback_precio=0):
+    """Devuelve el precio de liquidación conservador (inmune a desfases >45% entre FB y GG)."""
+    if not match:
+        return int(fallback_precio)
+    p_act = int(float(match.get("Precio_Actual", 0) or 0))
+    if p_act > 0:
+        return p_act
+    p_fb = int(float(match.get("Precio_Futbin", 0) or 0))
+    p_gg = int(float(match.get("Precio_FUTGG", 0) or 0))
+    validos = [p for p in (p_fb, p_gg) if p > 0]
+    return min(validos) if validos else int(fallback_precio)
 
 def generar_estado_resultados_contable(df_cartera, datos_recientes):
     resumen_estrategias = []
@@ -869,11 +1018,8 @@ def generar_estado_resultados_contable(df_cartera, datos_recientes):
 
         cands_m = [j for j in (datos_recientes or []) if j_nom in sin_tildes(j.get("Jugador", "")).lower()]
         match = min(cands_m, key=lambda j: abs(int(j.get("Precio_Actual", 0)) - p_pag)) if cands_m else None
-        if match:
-            p_ref = max(int(match.get("Precio_Actual", 0)), int(match.get("Precio_Futbin", 0)), int(match.get("Precio_FUTGG", 0)))
-            vnr_carta = int(round(p_ref * 0.95)) if p_ref > 0 else int(round(p_pag * 0.95))
-        else:
-            vnr_carta = int(round(p_pag * 0.95))
+        p_ref = precio_mercado_seguro_carta(match, fallback_precio=p_pag)
+        vnr_carta = int(round(p_ref * 0.95))
 
         roi_latente = ((vnr_carta - p_pag) / p_pag * 100.0) if p_pag > 0 else 0.0
         if roi_latente <= STOP_LOSS_PCT:
@@ -1157,9 +1303,9 @@ def analizar_totw_piso(datos_jugadores):
         precio = int(j.get("Precio_Actual", 0))
         fuente_t = j.get("Fuente_Mejor_Precio", "FB")
         enlace_t = j.get("Enlace_Optimo", j.get("Enlace_Futbin", ""))
-        media_match = re.search(r'Media\s*(\d{2})', nombre_full)
-        media = int(media_match.group(1)) if media_match else 0
-        es_totw = any(k in nombre_full.upper() for k in ["TOTW", "IN-FORM", "INFORM", " - IF)"])
+        media_str = extraer_media_exacta(nombre_full)
+        media = int(media_str) if media_str else 0
+        es_totw = categoria_version_carta(nombre_full) == "TOTW/IF"
         if es_totw and 9500 <= precio <= TOPE_TOTW_DESCARTE and media >= 83:
             candidatos_totw.append({
                 "Jugador": nombre_full.split(" (")[0] + f" (IF {media})",
@@ -1167,7 +1313,11 @@ def analizar_totw_piso(datos_jugadores):
                 "Precio_Actual": precio,
                 "Fuente": fuente_t,
                 "Break_Even_5%": calcular_break_even(precio),
-                "Precio_Lazy_1h": calcular_precio_lazy(precio),
+                "Precio_Lazy_1h": calcular_precio_lazy(
+                    precio,
+                    max_hist=int(j.get("Precio_Max_Hist", 0) or 0),
+                    muestras=int(j.get("Muestras_Hist", 0) or 0)
+                ),
                 "Riesgo": "🟢 Nulo (Cerca de descarte)" if precio <= 12500 else "🟡 Bajo (Piso SBC)",
                 "Enlace_Futbin": enlace_t
             })
@@ -1207,9 +1357,14 @@ def armar_texto_cartera(df_cartera, datos_finales):
         if match:
             p_fb = int(match.get('Precio_Futbin', 0))
             p_gg = int(match.get('Precio_FUTGG', 0))
-            precio_hoy = max(int(match['Precio_Actual']), p_fb, p_gg)
-            lazy_hoy = calcular_precio_lazy(precio_hoy, precio_pagado)
-            neto = (precio_hoy * 0.95) - precio_pagado
+            precio_hoy = precio_mercado_seguro_carta(match, fallback_precio=precio_pagado)
+            lazy_hoy = calcular_precio_lazy(
+                precio_hoy,
+                precio_pagado,
+                max_hist=int(match.get('Precio_Max_Hist', 0) or 0),
+                muestras=int(match.get('Muestras_Hist', 0) or 0)
+            )
+            neto = int(round((precio_hoy * 0.95) - precio_pagado))
             rentabilidad = (neto / precio_pagado) * 100 if precio_pagado > 0 else 0.0
             roi_diario = round(rentabilidad / max(1.0, dias_hold), 1)
             nombre_corto = match['Jugador'].split(' (')[0]
@@ -1276,7 +1431,7 @@ def analizar_jugador_individual(nombre_buscado, df_viejo, df_arb_viejo):
 
     puja_10 = calcular_puja_maxima_segura(precio_hoy, 0.10)
     break_even = calcular_break_even(precio_hoy)
-    lazy_sug = calcular_precio_lazy(precio_hoy)
+    lazy_sug = calcular_precio_lazy(precio_hoy, max_hist=p_max, muestras=muestras)
     stop_loss = calcular_stop_loss_sugerido(precio_hoy)
 
     info_gg = f"`{p_gg_hoy:,} mnds`" if p_gg_hoy > 0 else "Sin cotización en FUT.GG"
@@ -1340,7 +1495,7 @@ def crear_navegador_optimizado(ocultar=False):
         options.set_argument('--window-position=-32000,-32000')
 
     page = ChromiumPage(addr_or_opts=options)
-    page.set.timeouts(page_load=10)
+    page.set.timeouts(page_load=12)
     try:
         page.run_cdp('Page.addScriptToEvaluateOnNewDocument', source="""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
@@ -1349,20 +1504,28 @@ def crear_navegador_optimizado(ocultar=False):
         pass
     return page
 
+def _detener_carga_segura(page):
+    try:
+        page.stop_loading()
+    except Exception:
+        pass
+
 def detectar_tipo_carta_gg(texto_card, clases_card="", es_pase_totw=False):
-    """Detecta si una carta en FUT.GG es TOTW / IF, Icon, Hero, Promo u Oro a partir de su alt/clases."""
+    """Detecta si una carta en FUT.GG es TOTW/IF, Promo/Especial o Normal/Oro a partir de su alt/clases/rarity."""
     if es_pase_totw:
         return "TOTW IF"
-    combinado = f"{texto_card} {clases_card}".upper()
+    combinado = sin_tildes(f"{texto_card} {clases_card}").upper()
     if any(k in combinado for k in ["TEAM OF THE WEEK", "TOTW", "IN-FORM", "INFORM", "RARITY-TOTW", "RARITY_TOTW"]):
         return "TOTW IF"
     if "ICON" in combinado:
-        return "Icon - FUT.GG"
+        return "Icon - Promo/Especial"
     if "HERO" in combinado:
-        return "Hero - FUT.GG"
+        return "Hero - Promo/Especial"
     if "EVOLUTION" in combinado or "EVO " in combinado:
-        return "Evo - FUT.GG"
-    return "FUT.GG"
+        return "Evo - Promo/Especial"
+    if categoria_version_carta(combinado) == "Promo/Especial":
+        return "Promo/Especial"
+    return "Normal/Oro"
 
 def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
     print(f"\n⚡ Iniciando escaneo masivo de hasta {MAX_JUGADORES} cartas en FUT.GG PC ({max_paginas} páginas <= {presupuesto_max:,} mnds)...")
@@ -1381,6 +1544,7 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
     except Exception:
         pass
 
+    # Regla estricta: aislar únicamente la caja individual de cada jugador (contarLinksJugador === 1)
     script_gg = """
     window.scrollTo(0, document.body.scrollHeight / 2);
     function contarLinksJugador(el) {
@@ -1407,11 +1571,17 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
             let alt_txt = img.getAttribute('alt') || '';
             let src_txt = img.getAttribute('src') || '';
             if (alt_txt) alts.push(alt_txt);
-            if (src_txt.toLowerCase().includes('totw') || src_txt.toLowerCase().includes('inform')) alts.push('TOTW');
+            let src_low = src_txt.toLowerCase();
+            if (src_low.includes('totw') || src_low.includes('inform')) alts.push('TOTW');
+            else if (src_low.includes('icon')) alts.push('ICON');
+            else if (src_low.includes('hero')) alts.push('HERO');
+            else if (src_low.includes('promo') || src_low.includes('special') || src_low.includes('rttk') || src_low.includes('toty') || src_low.includes('tots')) alts.push('PROMO');
         }
+        let nodo_p = box.querySelector('[class*="price"], [data-testid*="price"]');
+        let texto_precio = nodo_p ? (nodo_p.innerText || nodo_p.textContent || '') : '';
         let clases_box = (box.className || '') + ' ' + (a.className || '');
         let texto_card = alts.join(' | ') + '\\n' + (box.innerText || box.textContent || '');
-        items.push({'href': href, 'texto': texto_card, 'clases': clases_box});
+        items.push({'href': href, 'texto': texto_card, 'texto_precio': texto_precio, 'clases': clases_box});
     }
     return items;
     """
@@ -1421,12 +1591,12 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
         f"https://www.fut.gg/players/?page=1&rarity_id=3&price__gte=9000&price__lte={TOPE_TOTW_DESCARTE}",
         f"https://www.fut.gg/players/?page=2&rarity_id=3&price__gte=9000&price__lte={TOPE_TOTW_DESCARTE}"
     ]
-    for idx_t, url_t in enumerate(urls_totw_dedicadas, 1):
+    for url_t in urls_totw_dedicadas:
         try:
             page.get(url_t)
-            if page.ele('xpath://a[contains(@href, "/players/")]', timeout=3):
-                page.wait(0.35)
-                page.stop_loading()
+            if page.ele('xpath://a[contains(@href, "/players/")]', timeout=4):
+                page.wait(0.4)
+                _detener_carga_segura(page)
                 datos_t = page.run_js(script_gg) or []
                 for item in datos_t:
                     href_limpio = (item.get('href', '') or '').split('?')[0]
@@ -1437,8 +1607,9 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
                         continue
                     nombre_gg = match_slug.group(1).replace('-', ' ').title()
                     texto = item.get('texto', '')
-                    valor_gg = extraer_precio_carta_unica_gg(texto, TOPE_TOTW_DESCARTE)
-                    if not (9000 <= valor_gg <= TOPE_TOTW_DESCARTE):
+                    texto_p = item.get('texto_precio', '')
+                    valor_gg = extraer_precio_carta_unica_gg(texto, TOPE_TOTW_DESCARTE, texto_precio=texto_p)
+                    if not (9000 <= valor_gg <= TOPE_TOTW_DESCARTE) or not es_multiplo_escalon_ea(valor_gg, TOPE_TOTW_DESCARTE):
                         continue
                     media = "??"
                     for cand_m in re.findall(r'\b([6-9]\d)\b', texto):
@@ -1467,13 +1638,23 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
             break
         url_gg = f"https://www.fut.gg/players/?page={pag}&price__gte=200&price__lte={presupuesto_max}"
         print(f"🌐 FUT.GG PC Página {pag}/{max_paginas}... (Capturados GG: {len(jugadores_gg)}/{MAX_JUGADORES})")
-        try:
-            page.get(url_gg)
-            page.ele('xpath://a[contains(@href, "/players/")]', timeout=4)
-            page.wait(random.uniform(0.35, 0.55))
-            page.stop_loading()
-            datos_gg = page.run_js(script_gg)
-        except Exception:
+        datos_gg = None
+        for intento in range(2):
+            try:
+                page.get(url_gg)
+                if page.ele('xpath://a[contains(@href, "/players/")]', timeout=5):
+                    page.wait(random.uniform(0.35, 0.60))
+                    _detener_carga_segura(page)
+                    datos_gg = page.run_js(script_gg)
+                    break
+            except Exception:
+                if intento == 0:
+                    time.sleep(0.6)
+                    continue
+        if not datos_gg:
+            paginas_vacias_seguidas += 1
+            if paginas_vacias_seguidas >= 4:
+                break
             continue
 
         nuevos_en_pagina = 0
@@ -1489,10 +1670,11 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
                 continue
             nombre_gg = match_slug.group(1).replace('-', ' ').title()
             texto = item.get('texto', '')
+            texto_p = item.get('texto_precio', '')
             clases_box = item.get('clases', '')
 
-            valor_gg = extraer_precio_carta_unica_gg(texto, presupuesto_max)
-            if not (200 <= valor_gg <= presupuesto_max):
+            valor_gg = extraer_precio_carta_unica_gg(texto, presupuesto_max, texto_precio=texto_p)
+            if not es_multiplo_escalon_ea(valor_gg, presupuesto_max):
                 continue
 
             media = "??"
@@ -1502,7 +1684,7 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG):
                     media = cand_m
                     break
 
-            if media == "??" or valor_gg == 36000 and media == "??":
+            if media == "??":
                 continue
 
             tipo_carta_gg = detectar_tipo_carta_gg(texto, clases_box, es_pase_totw=False)
@@ -1534,6 +1716,7 @@ def cruzar_futbin_futgg(datos_unificados, datos_futgg):
         return "", pd.DataFrame()
 
     desfases = []
+    desfases_descartados_version = 0
     vistos_cruce = set()
 
     for f in datos_unificados:
@@ -1548,16 +1731,21 @@ def cruzar_futbin_futgg(datos_unificados, datos_futgg):
 
         mayor = max(p_fb, p_gg)
         menor = min(p_fb, p_gg)
-        brecha_bruta_pct = ((mayor - menor) / menor) * 100
+        brecha_bruta_pct = ((mayor - menor) / menor) * 100.0
 
-        if 6.0 <= brecha_bruta_pct <= 60.0:
-            ganancia_potencial = round((mayor * 0.95) - menor)
-            if ganancia_potencial >= 250:
+        # Si supera 45%, es un posible desfase de versión o precio viejo -> NO dar falsa alerta de arbitraje
+        if brecha_bruta_pct > UMBRAL_DESFASE_VERSION_PCT:
+            desfases_descartados_version += 1
+            continue
+
+        if 6.0 <= brecha_bruta_pct <= UMBRAL_DESFASE_VERSION_PCT:
+            ganancia_potencial = int(round((mayor * 0.95) - menor))
+            if ganancia_potencial >= ganancia_neta_minima_real(menor):
                 vistos_cruce.add(id_unico)
-                m_med = re.search(r'Media\s*(\d{2})', str(f.get("Jugador", "")))
-                media_mostrar = m_med.group(1) if m_med else "00"
+                media_mostrar = extraer_media_exacta(f.get("Jugador", "")) or "00"
+                cat_c = categoria_version_carta(f.get("Jugador", ""))
                 desfases.append({
-                    "Jugador": f["Jugador"].split(" (")[0] + f" (Media {media_mostrar})",
+                    "Jugador": f["Jugador"].split(" (")[0] + f" (Media {media_mostrar} - {cat_c})",
                     "Precio_Futbin": p_fb,
                     "Precio_FUTGG": p_gg,
                     "Brecha_%": round(brecha_bruta_pct, 1),
@@ -1568,16 +1756,22 @@ def cruzar_futbin_futgg(datos_unificados, datos_futgg):
                 })
 
     df_desfases = pd.DataFrame(desfases)
+    nota_version = (
+        f"_🔎 {desfases_descartados_version} cruces con brecha >{int(UMBRAL_DESFASE_VERSION_PCT)}% marcados como posible desfase de versión/precio (excluidos de alertas)._\n\n"
+        if desfases_descartados_version > 0 else ""
+    )
     if df_desfases.empty:
-        return "⚡ *DESFASES FUTBIN vs FUT.GG (Mercado PC)*\n━━━━━━━━━━━━━━━━━━\nPrecios alineados.\n\n", df_desfases
+        return f"⚡ *DESFASES FUTBIN vs FUT.GG (Mercado PC)*\n━━━━━━━━━━━━━━━━━━\nPrecios alineados.\n{nota_version}", df_desfases
     df_desfases = df_desfases.sort_values(by="Margen_Neto_5%", ascending=False)
-    txt_arb = "⚡ *DESFASES FUTBIN vs FUT.GG (Mercado PC)*\n━━━━━━━━━━━━━━━━━━\n"
+    txt_arb = "⚡ *DESFASES FUTBIN vs FUT.GG (Mercado PC | 6%–45%)*\n━━━━━━━━━━━━━━━━━━\n"
     for _, row in df_desfases.head(5).iterrows():
         txt_arb += (
             f"👤 [*{row['Jugador']}*]({row['Enlace_FUTGG']})\n"
             f"🟦 FB: `{row['Precio_Futbin']:,}` 🆚 🟩 GG: `{row['Precio_FUTGG']:,}`\n"
             f"💸 Brecha: `{row['Brecha_%']}%` (Neto: `+{row['Margen_Neto_5%']:,}` | 🔨 Pujar <= `{row['Puja_Max_Sugerida']:,}`)\n\n"
         )
+    if nota_version:
+        txt_arb += nota_version
     return txt_arb, df_desfases
 
 def detectar_evoluciones(datos_unificados, datos_futgg):
@@ -1587,6 +1781,8 @@ def detectar_evoluciones(datos_unificados, datos_futgg):
     evos_detectadas = []
     vistos_evo = set()
     for f in datos_unificados:
+        if "🔎" in str(f.get("Senal_Trading", "")):
+            continue
         enlace = f.get("Enlace_Optimo", f.get("Enlace_Futbin", ""))
         nombre_corto = str(f.get("Jugador", "")).split(" (")[0]
         p_ant = float(f.get("Precio_Anterior", 0))
@@ -1604,15 +1800,15 @@ def detectar_evoluciones(datos_unificados, datos_futgg):
                 "Precio_Base": int(p_ant),
                 "Precio_Explosivo": int(p_act),
                 "Subida_%": round(var_b, 1),
-                "Ganancia_Potencial_Neta": round((p_act * 0.95) - p_ant),
+                "Ganancia_Potencial_Neta": int(round((p_act * 0.95) - p_ant)),
                 "Enlace": enlace
             })
 
         if enlace not in vistos_evo and p_fb > 0 and p_gg > 0 and 200 <= min(p_fb, p_gg) <= TOPE_PRECIO_BASE_EVO:
             base_dual = min(p_fb, p_gg)
             pico_dual = max(p_fb, p_gg)
-            salto_dual_pct = ((pico_dual - base_dual) / base_dual) * 100 if base_dual > 0 else 0
-            if 40.0 <= salto_dual_pct <= 350.0 and (pico_dual - base_dual) >= 1000:
+            salto_dual_pct = ((pico_dual - base_dual) / base_dual) * 100.0 if base_dual > 0 else 0.0
+            if 35.0 <= salto_dual_pct <= UMBRAL_DESFASE_VERSION_PCT and (pico_dual - base_dual) >= 1000:
                 vistos_evo.add(enlace)
                 origen_str = "🧬 Volando en GG" if p_gg > p_fb else "🔥 Volando en FB"
                 evos_detectadas.append({
@@ -1621,7 +1817,7 @@ def detectar_evoluciones(datos_unificados, datos_futgg):
                     "Precio_Base": int(base_dual),
                     "Precio_Explosivo": int(pico_dual),
                     "Subida_%": round(salto_dual_pct, 1),
-                    "Ganancia_Potencial_Neta": round((pico_dual * 0.95) - base_dual),
+                    "Ganancia_Potencial_Neta": int(round((pico_dual * 0.95) - base_dual)),
                     "Enlace": enlace
                 })
 
@@ -1715,6 +1911,7 @@ def procesar_mensajes_telegram(df_cartera, df_viejo, df_arb_viejo, df_evos_viejo
                             df_cartera = pd.concat([df_cartera, pd.DataFrame([{
                                 "Jugador_Exacto": str(jugador),
                                 "Estrategia": str(est_elegida),
+                                "Cantidad": 1,
                                 "Precio_Pagado": int(precio),
                                 "Estado": "Activo",
                                 "Precio_Venta": 0,
@@ -1742,11 +1939,14 @@ def procesar_mensajes_telegram(df_cartera, df_viejo, df_arb_viejo, df_evos_viejo
                             indices = df_cartera[(df_cartera['Jugador_Exacto'].str.lower().str.contains(jug_busqueda, na=False)) & (df_cartera['Estado'] == 'Activo')].index
                             if not indices.empty:
                                 idx_v = indices[0]
+                                cant_v = max(1, int(pd.to_numeric(df_cartera.loc[idx_v, 'Cantidad'], errors='coerce') or 1)) if 'Cantidad' in df_cartera.columns else 1
                                 precio_compra = float(df_cartera.loc[idx_v, 'Precio_Pagado'])
                                 jugador_real = df_cartera.loc[idx_v, 'Jugador_Exacto']
-                                costo_tax = int(round(precio_venta * 0.05))
-                                ganancia_limpia = int(round((precio_venta - costo_tax) - precio_compra))
-                                roi = round((ganancia_limpia / precio_compra) * 100, 2) if precio_compra > 0 else 0.0
+                                venta_bruta_lote = precio_venta * cant_v
+                                costo_lote = precio_compra * cant_v
+                                costo_tax = int(round(venta_bruta_lote * 0.05))
+                                ganancia_limpia = int(round((venta_bruta_lote - costo_tax) - costo_lote))
+                                roi = round((ganancia_limpia / costo_lote) * 100, 2) if costo_lote > 0 else 0.0
 
                                 df_cartera["Estado"] = df_cartera["Estado"].astype(object)
                                 df_cartera["Fecha_Venta"] = df_cartera["Fecha_Venta"].astype(object)
@@ -1758,7 +1958,7 @@ def procesar_mensajes_telegram(df_cartera, df_viejo, df_arb_viejo, df_evos_viejo
                                 df_cartera.loc[idx_v, 'Fecha_Venta'] = ahora_arg().strftime("%Y-%m-%d %H:%M")
 
                                 hubo_cambios = True
-                                enviar_alerta_telegram(f"📈 *VENTA CERRADA: {jugador_real}*\n• Neto Limpio: `{ganancia_limpia:+,} mnds` (`{roi:+}%`)")
+                                enviar_alerta_telegram(f"📈 *VENTA CERRADA: {cant_v}x {jugador_real}*\n• Neto Limpio: `{ganancia_limpia:+,} mnds` (`{roi:+}%`)")
                     except Exception:
                         pass
 
@@ -1777,12 +1977,17 @@ def verificar_alertas_sniper(datos_finales, df_alertas):
     df_alertas["Estado"] = df_alertas["Estado"].fillna("").astype(object)
     alertas_activas = df_alertas[df_alertas['Estado'] == 'Activa']
     for idx, alerta in alertas_activas.iterrows():
-        jug_buscado = str(alerta['Jugador_Buscado']).strip().lower()
+        jug_buscado = sin_tildes(str(alerta['Jugador_Buscado'])).strip().lower()
         precio_obj = float(alerta['Precio_Objetivo'])
-        match = next((j for j in datos_finales if jug_buscado in j['Jugador'].lower() and j['Precio_Actual'] > 0), None)
+        cands = [j for j in datos_finales if jug_buscado in sin_tildes(j['Jugador']).lower() and j['Precio_Actual'] > 0 and "🔎" not in str(j.get("Senal_Trading", ""))]
+        match = min(cands, key=lambda j: j['Precio_Actual']) if cands else None
         if match and match['Precio_Actual'] <= precio_obj:
             puja_sug = calcular_puja_maxima_segura(match['Precio_Actual'], 0.10)
-            lazy_sug = calcular_precio_lazy(match['Precio_Actual'])
+            lazy_sug = calcular_precio_lazy(
+                match['Precio_Actual'],
+                max_hist=int(match.get("Precio_Max_Hist", 0) or 0),
+                muestras=int(match.get("Muestras_Hist", 0) or 0)
+            )
             fuente_s = match.get("Fuente_Mejor_Precio", "PC")
             enlace_s = match.get("Enlace_Optimo", match['Enlace_Futbin'])
             enviar_alerta_telegram(
@@ -1808,9 +2013,9 @@ def leer_hoja_gsheets_segura(sh, nombre_hoja):
         return pd.DataFrame()
 
 def cargar_estado_excel():
-    columnas_cartera = ["Jugador_Exacto", "Estrategia", "Precio_Pagado", "Estado", "Precio_Venta", "Costo_EA_Tax", "Ganancia_Neta", "ROI_%", "Fecha_Compra", "Fecha_Venta"]
+    columnas_cartera = ["Jugador_Exacto", "Estrategia", "Cantidad", "Precio_Pagado", "Estado", "Precio_Venta", "Costo_EA_Tax", "Ganancia_Neta", "ROI_%", "Fecha_Compra", "Fecha_Venta"]
     cols_texto_cartera = ["Jugador_Exacto", "Estrategia", "Estado", "Fecha_Compra", "Fecha_Venta"]
-    cols_num_cartera = ["Precio_Pagado", "Precio_Venta", "Costo_EA_Tax", "Ganancia_Neta", "ROI_%"]
+    cols_num_cartera = ["Cantidad", "Precio_Pagado", "Precio_Venta", "Costo_EA_Tax", "Ganancia_Neta", "ROI_%"]
     columnas_alertas = ["Jugador_Buscado", "Precio_Objetivo", "Estado"]
 
     df_viejo = None
@@ -1836,11 +2041,12 @@ def cargar_estado_excel():
             df_c = pd.read_excel(archivo_excel, sheet_name="Mi_Cartera")
             for col in columnas_cartera:
                 if col not in df_c.columns:
-                    df_c[col] = 0 if col in cols_num_cartera else ""
+                    df_c[col] = 1 if col == "Cantidad" else (0 if col in cols_num_cartera else "")
             for col_t in cols_texto_cartera:
                 df_c[col_t] = df_c[col_t].fillna("").astype(str).replace("nan", "").astype(object)
             for col_n in cols_num_cartera:
-                df_c[col_n] = pd.to_numeric(df_c[col_n], errors="coerce").fillna(0)
+                df_c[col_n] = pd.to_numeric(df_c[col_n], errors="coerce").fillna(1 if col_n == "Cantidad" else 0)
+            df_c["Cantidad"] = df_c["Cantidad"].clip(lower=1).astype(int)
             df_cartera = df_c[columnas_cartera]
         except Exception:
             pass
@@ -1875,9 +2081,10 @@ def cargar_estado_excel():
                 if not df_c_gs.empty:
                     for col in columnas_cartera:
                         if col not in df_c_gs.columns:
-                            df_c_gs[col] = 0 if col in cols_num_cartera else ""
+                            df_c_gs[col] = 1 if col == "Cantidad" else (0 if col in cols_num_cartera else "")
                     for col_n in cols_num_cartera:
-                        df_c_gs[col_n] = pd.to_numeric(df_c_gs[col_n], errors="coerce").fillna(0)
+                        df_c_gs[col_n] = pd.to_numeric(df_c_gs[col_n], errors="coerce").fillna(1 if col_n == "Cantidad" else 0)
+                    df_c_gs["Cantidad"] = df_c_gs["Cantidad"].clip(lower=1).astype(int)
                     df_cartera = df_c_gs[columnas_cartera]
             except Exception:
                 pass
@@ -1898,6 +2105,21 @@ def formatear_dashboard_financiero_excel(ruta_excel):
         wb.save(ruta_excel)
     except Exception:
         pass
+
+def _detectar_tipo_carta_futbin(texto_fila, pistas_rareza="", lineas=None):
+    """Determina con precisión la categoría de una carta en Futbin (TOTW IF, Promo/Especial o Normal/Oro)."""
+    combinado = sin_tildes(f"{pistas_rareza} {texto_fila}").upper()
+    if any(k in combinado for k in ["TEAM OF THE WEEK", "TOTW", "IN-FORM", "INFORM", "GOLD-IF", "SILVER-IF", "BRONZE-IF"]):
+        return "TOTW IF"
+    if categoria_version_carta(combinado) == "Promo/Especial":
+        return "Promo/Especial"
+    for l in (lineas or []):
+        l_u = sin_tildes(l).upper()
+        if any(k in l_u for k in ["TOTW", "IN-FORM", "INFORM"]):
+            return "TOTW IF"
+        if categoria_version_carta(l_u) == "Promo/Especial":
+            return l.strip()
+    return "Normal/Oro"
 
 def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
     inicio_tiempo = time.time()
@@ -1925,10 +2147,10 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
             page_activa.get(base_url_futbin)
             page_activa.wait(1.0)
             page_activa.run_js('document.cookie = "platform=pc; path=/; max-age=31536000"; localStorage.setItem("platform", "pc");')
-            if not page_activa.ele('xpath://a[contains(@href, "/player/")]', timeout=2):
+            if not page_activa.ele('xpath://a[contains(@href, "/player/")]', timeout=3):
                 page_activa.get("https://www.futbin.com/27/players")
                 page_activa.wait(0.8)
-                if page_activa.ele('xpath://a[contains(@href, "/player/")]', timeout=2):
+                if page_activa.ele('xpath://a[contains(@href, "/player/")]', timeout=3):
                     base_url_futbin = "https://www.futbin.com/27/players"
         except Exception:
             pass
@@ -1945,29 +2167,39 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
             if (!a) continue;
             let href = a.getAttribute('href');
             let texto_fila = fila.innerText || fila.textContent || "";
-            
+
             let nodo_pc = fila.querySelector('.pc-price, .price-pc, [data-platform="pc"]');
             let nodo_ps = fila.querySelector('.ps-price, .price-ps, [data-platform="ps"]');
             let nodo_precio = nodo_pc || fila.querySelector('.price, [data-price], td:nth-last-child(2)');
-            let texto_precio = (nodo_precio && (nodo_precio.innerText || nodo_precio.textContent).trim() !== "") 
-                               ? (nodo_precio.innerText || nodo_precio.textContent) 
+            let texto_precio = (nodo_precio && (nodo_precio.innerText || nodo_precio.textContent).trim() !== "")
+                               ? (nodo_precio.innerText || nodo_precio.textContent)
                                : texto_fila;
             let texto_consola = (nodo_ps && (nodo_ps.innerText || nodo_ps.textContent).trim() !== "")
                                ? (nodo_ps.innerText || nodo_ps.textContent)
                                : texto_precio;
-            
+
             let media = "??";
             let rating_ele = fila.querySelector('.rating, .form.rating, span.rating_val, td:nth-child(2)');
             if (rating_ele) {
                 let match = (rating_ele.innerText || rating_ele.textContent).match(/\\b([4-9]\\d)\\b/);
                 if (match) media = match[1];
             }
+
+            let pistas = [(fila.className || ''), (rating_ele ? (rating_ele.className || '') : '')];
+            for (let img of fila.querySelectorAll('img')) {
+                let alt_t = img.getAttribute('alt') || '';
+                let src_t = img.getAttribute('src') || '';
+                if (alt_t) pistas.push(alt_t);
+                if (src_t) pistas.push(src_t);
+            }
+
             data.push({
                 'href': href,
                 'texto_fila': texto_fila,
                 'texto_precio': texto_precio,
                 'texto_consola': texto_consola,
-                'media': media
+                'media': media,
+                'pistas_rareza': pistas.join(' ')
             });
         }
         return data;
@@ -1991,11 +2223,12 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                         break
                     continue
                 page_activa.wait(random.uniform(0.35, 0.55))
-                page_activa.stop_loading()
+                _detener_carga_segura(page_activa)
                 datos_pagina = page_activa.run_js(script_js)
             except Exception:
                 paginas_fb_vacias += 1
                 if paginas_fb_vacias >= 3:
+                    print("⏩ Futbin bloqueado por Cloudflare en este servidor. Saltando directo a FUT.GG...")
                     break
                 continue
 
@@ -2007,6 +2240,7 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                 texto_fila = item.get('texto_fila', '')
                 texto_precio = item.get('texto_precio', '')
                 texto_consola = item.get('texto_consola', '')
+                pistas_rareza = item.get('pistas_rareza', '')
 
                 if not href or '/player/' not in href or href in enlaces_vistos:
                     continue
@@ -2023,30 +2257,27 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
                         if l.isdigit() and 45 <= int(l) <= 99:
                             media = l
                             break
+                if media == "??":
+                    continue
 
-                tipo_carta = "Normal"
-                for l in lineas:
-                    if l.isdigit() or '++' in l.upper() or '\\' in l or '/' in l:
-                        continue
-                    if len(l) >= 3 and not re.search(r'\d', l):
-                        tipo_carta = l
-                        break
+                tipo_carta = _detectar_tipo_carta_futbin(texto_fila, pistas_rareza=pistas_rareza, lineas=lineas)
 
                 valor_actual = extraer_precio_robusto(texto_precio, texto_fila, PRESUPUESTO_MAXIMO)
                 valor_consola = extraer_precio_robusto(texto_consola, texto_fila, PRESUPUESTO_MAXIMO) or valor_actual
 
-                if 200 <= valor_actual <= PRESUPUESTO_MAXIMO:
+                if es_multiplo_escalon_ea(valor_actual, PRESUPUESTO_MAXIMO):
                     enlaces_vistos.add(href)
                     jugadores_tendencia.append({
                         "Jugador": f"{nombre_url} (Media {media} - {tipo_carta})",
                         "Enlace": f"https://www.futbin.com{href}" if href.startswith('/') else href,
                         "Precio_Actual": valor_actual,
-                        "Precio_Consola": valor_consola
+                        "Precio_Consola": valor_consola if es_multiplo_escalon_ea(valor_consola, PRESUPUESTO_MAXIMO) else valor_actual
                     })
 
             if len(jugadores_tendencia) == antes_pag:
                 paginas_fb_vacias += 1
-                if paginas_fb_vacias >= 4:
+                if paginas_fb_vacias >= 3:
+                    print("⏩ 3 páginas vacías seguidas en Futbin. Saltando directo a FUT.GG...")
                     break
             else:
                 paginas_fb_vacias = 0
@@ -2195,20 +2426,21 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
 # ==========================================
 # EJECUCIÓN PRINCIPAL (COMPATIBLE CON GITHUB ACTIONS Y PC)
 # ==========================================
-en_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
-modo_auto = en_github_actions or (len(sys.argv) > 1 and sys.argv[1].lower() == "auto")
-modo_vigilante_auto = len(sys.argv) > 1 and sys.argv[1].lower() == "vigilante"
+if __name__ == "__main__":
+    en_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
+    modo_auto = en_github_actions or (len(sys.argv) > 1 and sys.argv[1].lower() == "auto")
+    modo_vigilante_auto = len(sys.argv) > 1 and sys.argv[1].lower() == "vigilante"
 
-if modo_vigilante_auto:
-    modo_elegido = "4"
-elif modo_auto:
-    modo_elegido = "1"
-else:
-    modo_elegido = input("\n👉 Elegí una opción (1, 2, 3, 4 o 5 y Enter). O dejalo en blanco para Vigilante (4): ").strip() or "4"
+    if modo_vigilante_auto:
+        modo_elegido = "4"
+    elif modo_auto:
+        modo_elegido = "1"
+    else:
+        modo_elegido = input("\n👉 Elegí una opción (1, 2, 3, 4 o 5 y Enter). O dejalo en blanco para Vigilante (4): ").strip() or "4"
 
-if modo_elegido == "4":
-    while True:
-        ejecutar_ciclo_radar("1", ocultar_navegador=True)
-        time.sleep(INTERVALO_VIGILANTE_MIN * 60)
-else:
-    ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=modo_auto)
+    if modo_elegido == "4":
+        while True:
+            ejecutar_ciclo_radar("1", ocultar_navegador=True)
+            time.sleep(INTERVALO_VIGILANTE_MIN * 60)
+    else:
+        ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=modo_auto)
