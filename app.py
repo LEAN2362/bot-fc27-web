@@ -1462,7 +1462,7 @@ def calcular_semaforo_y_calendario_ea(df_corte):
         col_sem = "#ff5252"
     else:
         tit_sem = f"🟡 MERCADO ESTABLE / IDEAL FLIPPING & LAZY (Var: {var_prom:+.1f}% | {pct_en_piso}% en piso)"
-        det_sem = f"Flujo equilibrado en {dia_nom}. Comprá por puja (+10% ROI) o arbitraje FB/GG y listá Lazy a 1h (+12%)."
+        det_sem = f"Flujo equilibrado en {dia_nom}. Comprá por puja (+10% ROI) sobre base FUT.GG y listá Lazy a 1h (+12%)."
         col_sem = "#ffd600"
 
     return tit_sem, det_sem, col_sem, titulo_cal, detalle_cal
@@ -1560,10 +1560,7 @@ def precio_mercado_seguro_carta(fila_carta, fallback_precio=0):
     p_act = num_seguro(fila_carta.get("Precio_Actual", 0), 0)
     if p_act > 0:
         return p_act
-    p_fb = num_seguro(fila_carta.get("Precio_Futbin", 0), 0)
-    p_gg = num_seguro(fila_carta.get("Precio_FUTGG", 0), 0)
-    validos = [p for p in (p_fb, p_gg) if p > 0]
-    return min(validos) if validos else int(fallback_precio)
+    return int(fallback_precio)
 
 def fmt_monedas(valor, ocultar=False, con_signo=False):
     if ocultar:
@@ -1647,7 +1644,7 @@ def generar_reporte_estrategico_vivo(df_corte, filas_cartera, presupuesto, roi_p
     df_ventas = df_disp[df_disp["Accion"].astype(str).str.contains("VENDER", na=False)].sort_values(by="Variacion_Neta_%", ascending=False).head(12) if "Accion" in df_disp.columns else pd.DataFrame()
     df_muestra = pd.concat([df_compras, df_ventas, df_disp.head(15)]).drop_duplicates(subset=["Jugador"]).head(30)
 
-    cols_res = [c for c in ["Jugador", "Precio_Actual", "Fuente_Mejor_Precio", "Variacion_Bruta_%", "Senal_Trading", "Puja_Max_10%_ROI", "Precio_Lazy_Sugerido", "Accion"] if c in df_muestra.columns]
+    cols_res = [c for c in ["Jugador", "Precio_Actual", "Variacion_Bruta_%", "Senal_Trading", "Puja_Max_10%_ROI", "Precio_Lazy_Sugerido", "Accion"] if c in df_muestra.columns]
     tabla_txt = df_muestra[cols_res].to_string(index=False) if not df_muestra.empty else "Sin datos en el corte actual."
 
     cartera_txt = "Sin cartas activas en cartera."
@@ -1659,7 +1656,7 @@ def generar_reporte_estrategico_vivo(df_corte, filas_cartera, presupuesto, roi_p
         cartera_txt = "\n".join(lineas_c)
 
     prompt = f"""
-    Actuá como Trader Cuantitativo Principal de EA Sports FC 27 para la plataforma {plataforma}.
+    Actuá como Trader Cuantitativo Principal de EA Sports FC 27 para la plataforma {plataforma} (Base Exclusiva FUT.GG, hasta 10,000 cartas).
     Momento del análisis: {dia_hoy} {hora_str} hs (ARG).
     Parámetros del usuario: Presupuesto Tope: {presupuesto:,} monedas | Objetivo Puja: +{roi_pct}% ROI | Recargo Lazy Buyer: +{lazy_pct}% | Tax EA: 5%.
     ENFOQUE SOLICITADO POR EL USUARIO: {enfoque}.
@@ -1667,11 +1664,11 @@ def generar_reporte_estrategico_vivo(df_corte, filas_cartera, presupuesto, roi_p
     CARTERA ACTIVA ACTUAL DEL USUARIO:
     {cartera_txt}
 
-    MUESTRA EN VIVO DEL MERCADO ({len(df_corte)} cartas totales en padrón):
+    MUESTRA EN VIVO DEL MERCADO ({len(df_corte):,} cartas totales en padrón FUT.GG):
     {tabla_txt}
 
     Redactá un REPORTE ESTRATÉGICO EN VIVO claro, directo y accionable (usando viñetas, sin usar tablas con '|'):
-    1. 🎯 TOP {top_n} OPORTUNIDADES DE COMPRA AHORA ({enfoque}): Indicá Nombre, Precio Actual, Fuente más barata (FB o GG), hasta cuánto PUJAR (+{roi_pct}% ROI) y a cuánto listar para LAZY BUYERS (+{lazy_pct}%).
+    1. 🎯 TOP {top_n} OPORTUNIDADES DE COMPRA AHORA ({enfoque}): Indicá Nombre, Precio Actual en FUT.GG, hasta cuánto PUJAR (+{roi_pct}% ROI) y a cuánto listar para LAZY BUYERS (+{lazy_pct}%).
     2. 💼 DIAGNÓSTICO DE TU CARTERA ACTIVA: Qué hacer hoy con cada una de las cartas que el usuario tiene en su cartera (o cómo asignar su liquidez si no tiene cartas).
     3. 🧭 PLAN DE ACCIÓN PARA HOY ({dia_hoy}): Recomendación según la fase actual del ciclo semanal de Rivals / FUT Champions.
     """
@@ -1683,18 +1680,17 @@ def generar_reporte_estrategico_vivo(df_corte, filas_cartera, presupuesto, roi_p
 
     lineas_fb = [
         f"🤖 **REPORTE TÁCTICO CUANTITATIVO EN VIVO ({dia_hoy} {hora_str} hs | Enfoque: {enfoque})**",
-        f"*(Generado en tiempo real sobre {len(df_corte):,} cartas con Presupuesto: {presupuesto:,} mnds)*\n",
+        f"*(Base Exclusiva FUT.GG · {len(df_corte):,} cartas analizadas | Presupuesto: {presupuesto:,} mnds)*\n",
         f"### 🎯 Top {top_n} Oportunidades Detectadas en tu Rango (<={presupuesto:,} mnds):"
     ]
     for _, r in df_muestra.head(top_n).iterrows():
         nom = str(r.get("Jugador", "Carta")).split(" (")[0]
         p_a = num_seguro(r.get("Precio_Actual", 0))
-        f_a = str(r.get("Fuente_Mejor_Precio", "PC"))
         puja_a = num_seguro(r.get("Puja_Max_10%_ROI", 0))
         lazy_a = num_seguro(r.get("Precio_Lazy_Sugerido", 0))
         var_a = float_seguro(r.get("Variacion_Bruta_%", 0))
         sen_a = str(r.get("Senal_Trading", "Operable"))
-        lineas_fb.append(f"- **{nom}** (`{p_a:,} mnds` en `{f_a}` | `{var_a:+.1f}%`) — {sen_a} ➡️ 🔨 Pujar hasta `{puja_a:,}` | 🎯 Listar Lazy a `{lazy_a:,}`")
+        lineas_fb.append(f"- **{nom}** (`{p_a:,} mnds` en `FUT.GG` | `{var_a:+.1f}%`) — {sen_a} ➡️ 🔨 Pujar hasta `{puja_a:,}` | 🎯 Listar Lazy a `{lazy_a:,}`")
 
     lineas_fb.append("\n### 💼 Diagnóstico de tu Cartera Activa:")
     if filas_cartera:
@@ -1724,10 +1720,10 @@ def generar_oraculo_contenido_vivo(df_corte, df_fodder, df_totw, hora_drop_txt, 
             cands = df_corte[df_corte["Jugador"].astype(str).str.contains(f"Media {med}", na=False) & (df_corte["Precio_Actual"].apply(num_seguro) > 0)]
             if not cands.empty:
                 min_row = cands.loc[cands["Precio_Actual"].apply(num_seguro).idxmin()]
-                fodder_lista.append(f"Media {med}: {str(min_row['Jugador']).split(' (')[0]} a {num_seguro(min_row['Precio_Actual']):,} mnds [{min_row.get('Fuente_Mejor_Precio', 'PC')}]")
+                fodder_lista.append(f"Media {med}: {str(min_row['Jugador']).split(' (')[0]} a {num_seguro(min_row['Precio_Actual']):,} mnds [FUT.GG]")
 
     prompt = f"""
-    Actuá como el Oráculo de Contenido, SBCs y Filtraciones (Leaks) de EA Sports FC 27 ({plataforma}).
+    Actuá como el Oráculo de Contenido, SBCs y Filtraciones (Leaks) de EA Sports FC 27 ({plataforma} · Base Exclusiva FUT.GG).
     Hoy es {dia_hoy}, hora actual: {hora_str} hs (ARG). Horario del Drop diario para el usuario: {hora_drop_txt}.
     Pauta de contenido de EA para {dia_hoy}: {pauta_dia}
     Cartas con mayor presión compradora en vivo hoy: {', '.join(subidas) if subidas else 'Mercado estable sin picos abruptos'}
@@ -1826,7 +1822,7 @@ def extraer_id_sheet(url_o_id):
 def convertir_columnas_numericas(df):
     cols_num = [
         "Cantidad", "Precio_Pagado", "Precio_Venta", "Costo_EA_Tax", "Ganancia_Neta", "ROI_%",
-        "Precio_Anterior", "Precio_Actual", "Precio_Consola", "Precio_Futbin", "Precio_FUTGG",
+        "Precio_Anterior", "Precio_Actual", "Precio_Consola",
         "Precio_Min_Hist", "Precio_Max_Hist", "Precio_Prom_Hist", "Muestras_Hist",
         "Puja_Max_10%_ROI", "Break_Even_5%", "Precio_Lazy_Sugerido",
         "Variacion_Bruta_%", "Beneficio_Neto_Mnds", "Variacion_Neta_%",
@@ -1857,7 +1853,7 @@ def cargar_por_id_publico(sheet_id):
     hojas = {}
     nombres_hojas = [
         "Historial_Tendencias", "Mi_Cartera", "Recomendacion_IA",
-        "Dashboard_Financiero", "Radar_Fodder", "Arbitraje_FUTGG",
+        "Dashboard_Financiero", "Radar_Fodder",
         "Radar_Evos", "Radar_TOTW", "Radar_Links_Domino", "Mis_Alertas", "Clubes_Cloud"
     ]
     df_base_comparacion = None
@@ -1977,7 +1973,7 @@ try:
                 datos["Historial_Tendencias"] = df_hist_excel
                 for h in [
                     "Recomendacion_IA", "Dashboard_Financiero",
-                    "Radar_Fodder", "Arbitraje_FUTGG", "Radar_Evos", "Radar_TOTW", "Radar_Links_Domino"
+                    "Radar_Fodder", "Radar_Evos", "Radar_TOTW", "Radar_Links_Domino"
                 ]:
                     try:
                         datos[h] = convertir_columnas_numericas(pd.read_excel(ARCHIVO_EXCEL, sheet_name=h))
@@ -2402,7 +2398,7 @@ try:
         if not df_historial.empty and "Jugador" in df_historial.columns and "Precio_Actual" in df_historial.columns:
             df_h_valid = df_historial[df_historial["Precio_Actual"].apply(num_seguro) > 0]
             if not df_h_valid.empty:
-                grp_col = "Enlace_Futbin" if "Enlace_Futbin" in df_h_valid.columns else "Jugador"
+                grp_col = "Enlace_Optimo" if "Enlace_Optimo" in df_h_valid.columns else ("Enlace_Futbin" if "Enlace_Futbin" in df_h_valid.columns else "Jugador")
                 agg_h = df_h_valid.groupby(grp_col)["Precio_Actual"].agg(["max", "count"])
                 mapa_max_hist = agg_h["max"].to_dict()
                 mapa_cnt_hist = agg_h["count"].to_dict()
@@ -2453,11 +2449,11 @@ try:
             <div class="club-crest" style="border-color: {acento_club_1}55;">{escudo_svg}</div>
             <div class="header-title-wrap">
                 <h1>FC 27 TRADING TERMINAL PRO</h1>
-                <div class="header-club-sub">{html_lib.escape(str(nombre_club_activo))} &nbsp;·&nbsp; Cloud 24/7</div>
+                <div class="header-club-sub">{html_lib.escape(str(nombre_club_activo))} &nbsp;·&nbsp; Base Exclusiva FUT.GG (Hasta 10,000 cartas) &nbsp;·&nbsp; Cloud 24/7</div>
                 <div class="header-badges">
                     <span class="status-pill">{html_lib.escape(estado_conexion)}</span>
                     <span class="status-pill">{html_lib.escape(etiqueta_plat)}</span>
-                    <span class="status-pill">📦 Padrón <b>{len(df_ult_corte):,}</b></span>
+                    <span class="status-pill">📦 Padrón FUT.GG <b>{len(df_ult_corte):,}</b></span>
                     <span class="status-pill">🕒 Corte <b>{html_lib.escape(str(ultima_act))}</b></span>
                 </div>
             </div>
@@ -2525,7 +2521,7 @@ try:
                             str(mejor_fila["Jugador"]),
                             p_actual_sn,
                             p_obj,
-                            str(mejor_fila.get("Fuente_Mejor_Precio", "PC")),
+                            "FUT.GG",
                             str(mejor_fila.get("Enlace_Optimo", mejor_fila.get("Enlace_Futbin", "")))
                         ))
         if disparos_sniper:
@@ -3032,7 +3028,7 @@ try:
                 {"Rubro Contable": "(-) Costo de Adquisición de Cartas Vendidas (CMV)", "Monto (Monedas)": -costo_adq},
                 {"Rubro Contable": "(=) CONTRIBUCIÓN MARGINAL NETA (GANANCIA REALIZADA)", "Monto (Monedas)": contrib_marginal},
                 {"Rubro Contable": "📦 Inventario Activo (Capital Inmovilizado)", "Monto (Monedas)": cap_inmovilizado},
-                {"Rubro Contable": "📈 Inventario Activo a VNR Dual FB+GG (Neto 5% Tax)", "Monto (Monedas)": vnr_total},
+                {"Rubro Contable": "📈 Inventario Activo a VNR FUT.GG (Neto 5% Tax)", "Monto (Monedas)": vnr_total},
                 {"Rubro Contable": "⚖️ Resultado por Tenencia (No Realizado)", "Monto (Monedas)": tenencia_total},
                 {"Rubro Contable": "💵 Liquidez Disponible (Caja Actual)", "Monto (Monedas)": liquidez_disp},
             ])
@@ -3191,7 +3187,7 @@ try:
                 st.plotly_chart(fig_proy, use_container_width=True)
 
     # ==========================================
-    # PESTAÑA 2: RADAR CON LÍMITE DE PRECIO AMPLIADO HASTA 15,000,000 MNDS + ARBITRAJE FB vs GG
+    # PESTAÑA 2: RADAR EXCLUSIVO FUT.GG (HASTA 10,000 CARTAS | 15,000,000 MNDS)
     # ==========================================
     with tab2:
         st.subheader("🔍 Lupa Visual Histórica (Evolución de Precio, Piso, Promedio y Zona de Puja)")
@@ -3246,7 +3242,7 @@ try:
                         df_top_g = df_top_g.sort_values(by="Variacion_Bruta_%").head(5)
                     else:
                         df_top_g = df_top_g.head(5)
-                    lineas_share = [f"⚡ *TOP 5 GANGAS FC27 ({etiqueta_plat} | Corte {ultima_act})* ⚡"]
+                    lineas_share = [f"⚡ *TOP 5 GANGAS FC27 — FUT.GG ({etiqueta_plat} | Corte {ultima_act})* ⚡"]
                     for _, rg in df_top_g.iterrows():
                         nom_sh = str(rg.get("Jugador", "")).split(" (")[0]
                         p_sh = num_seguro(rg.get("Precio_Actual", 0))
@@ -3256,55 +3252,28 @@ try:
                     st.code("\n".join(lineas_share), language="markdown")
 
             with c_sh2:
-                with st.expander("⚖️ Detector de Arbitraje Real (12%–45%) & 💥 Flash Crashes (Anti-Desfase)", expanded=False):
-                    filas_arb = []
+                with st.expander("💥 Detector de Flash Crashes Intradía & Rebotes (FUT.GG)", expanded=False):
+                    filas_crash = []
                     for _, r_ar in df_ult_corte.iterrows():
-                        p_fb_a = num_seguro(r_ar.get("Precio_Futbin", 0))
-                        p_gg_a = num_seguro(r_ar.get("Precio_FUTGG", 0))
                         var_a = float_seguro(r_ar.get("Variacion_Bruta_%", 0.0))
                         senal_a = str(r_ar.get("Senal_Trading", ""))
-                        es_desfase_extremo = False
-                        if p_fb_a > 0 and p_gg_a > 0:
-                            menor_a = min(p_fb_a, p_gg_a)
-                            mayor_a = max(p_fb_a, p_gg_a)
-                            brecha_pct = round(((mayor_a - menor_a) / max(1, menor_a)) * 100.0, 1)
-                            neto_arb = int(round((mayor_a * 0.95) - menor_a))
-                            if brecha_pct > UMBRAL_DESFASE_VERSION_PCT:
-                                es_desfase_extremo = True
-                                filas_arb.append({
-                                    "Jugador": r_ar.get("Jugador"),
-                                    "Tipo": "🔎 Desfase Versión/Precio (>45%)",
-                                    "Compra_Min": menor_a,
-                                    "Ref_Alta": mayor_a,
-                                    "Brecha_o_Caida": f"+{brecha_pct}% (Revisar versión)",
-                                    "Puja_Sugerida": num_seguro(r_ar.get("Puja_Max_10%_ROI", 0))
-                                })
-                            elif 12.0 <= brecha_pct <= UMBRAL_DESFASE_VERSION_PCT and neto_arb >= ganancia_neta_minima_real(menor_a):
-                                filas_arb.append({
-                                    "Jugador": r_ar.get("Jugador"),
-                                    "Tipo": "⚖️ Arbitraje FB/GG",
-                                    "Compra_Min": menor_a,
-                                    "Ref_Alta": mayor_a,
-                                    "Brecha_o_Caida": f"+{brecha_pct}% ({neto_arb:+,} netos)",
-                                    "Puja_Sugerida": num_seguro(r_ar.get("Puja_Max_10%_ROI", 0))
-                                })
-                        if var_a <= -15.0 and not es_desfase_extremo and "🔎" not in senal_a:
+                        if var_a <= -15.0 and "🔎" not in senal_a:
                             p_act_fc = num_seguro(r_ar.get("Precio_Actual", 0))
                             p_prom_fc = num_seguro(r_ar.get("Precio_Prom_Hist", r_ar.get("Precio_Anterior", 0)))
                             neto_fc = int(round((p_prom_fc * 0.95) - p_act_fc)) if p_prom_fc > 0 else 0
-                            if neto_fc >= ganancia_neta_minima_real(p_act_fc):
-                                filas_arb.append({
+                            if p_act_fc > 0 and neto_fc >= ganancia_neta_minima_real(p_act_fc):
+                                filas_crash.append({
                                     "Jugador": r_ar.get("Jugador"),
                                     "Tipo": "⚠️ Cuchillo / Crash" if "⚠️" in senal_a else "💥 Flash Crash",
-                                    "Compra_Min": p_act_fc,
-                                    "Ref_Alta": p_prom_fc,
-                                    "Brecha_o_Caida": f"{var_a:+.1f}% ({neto_fc:+,} netos)",
+                                    "Precio_Actual": p_act_fc,
+                                    "Ref_Historica": p_prom_fc,
+                                    "Caida_y_Neto": f"{var_a:+.1f}% ({neto_fc:+,} netos)",
                                     "Puja_Sugerida": num_seguro(r_ar.get("Puja_Max_10%_ROI", 0))
                                 })
-                    if filas_arb:
-                        st.dataframe(pd.DataFrame(filas_arb).head(25), use_container_width=True, hide_index=True)
+                    if filas_crash:
+                        st.dataframe(pd.DataFrame(filas_crash).head(25), use_container_width=True, hide_index=True)
                     else:
-                        st.caption("Sin arbitrajes válidos (12%–45%) ni Flash Crashes rentables Post-Tax en este corte.")
+                        st.caption("Sin Flash Crashes intradía rentables Post-Tax (caída <= -15%) en este corte.")
 
         # TOP 3 OPORTUNIDADES DEL MOMENTO (TARJETAS VISUALES DESTACADAS)
         if not df_ult_corte.empty:
@@ -3335,18 +3304,17 @@ try:
                 for i_op, (_, r_op) in enumerate(top3_opp.iterrows()):
                     nom_op = str(r_op.get("Jugador", "Carta"))
                     p_act_op = num_seguro(r_op.get("Precio_Actual", 0))
-                    p_fb_op = num_seguro(r_op.get("Precio_Futbin", 0))
-                    p_gg_op = num_seguro(r_op.get("Precio_FUTGG", 0))
-                    fuente_op = str(r_op.get("Fuente_Mejor_Precio", "FB")).strip() or "FB"
+                    p_min_op = num_seguro(r_op.get("Precio_Min_Hist", p_act_op))
+                    p_prom_op = num_seguro(r_op.get("Precio_Prom_Hist", p_act_op))
                     lazy_op = num_seguro(r_op.get("Precio_Lazy_Sugerido", 0))
                     puja_op = num_seguro(r_op.get("Puja_Max_10%_ROI", 0))
                     neto_op = int(round((lazy_op * 0.95) - p_act_op))
                     var_op = float_seguro(r_op.get("Variacion_Bruta_%", 0.0))
                     senal_op = str(r_op.get("Senal_Trading", "⚡ Oportunidad"))
                     link_op = str(r_op.get("Enlace_Optimo", r_op.get("Enlace_Futbin", "")) or "").strip()
-                    link_html_op = f'<a href="{html_lib.escape(link_op)}" target="_blank">Abrir Carta ↗</a>' if link_op.startswith("http") else '<span>Sin enlace</span>'
-                    fb_txt = f"{p_fb_op:,}" if p_fb_op > 0 else "—"
-                    gg_txt = f"{p_gg_op:,}" if p_gg_op > 0 else "—"
+                    link_html_op = f'<a href="{html_lib.escape(link_op)}" target="_blank">Abrir en FUT.GG ↗</a>' if link_op.startswith("http") else '<span>Sin enlace</span>'
+                    min_txt = f"{p_min_op:,}" if p_min_op > 0 else "—"
+                    prom_txt = f"{p_prom_op:,}" if p_prom_op > 0 else "—"
                     var_col = "#34d399" if var_op <= 0 else "#f87171"
 
                     with cols_opp[i_op]:
@@ -3354,13 +3322,13 @@ try:
                         <div class="opp-card" style="border-left-color:{bordes_opp[i_op]};">
                             <div class="opp-rank-row">
                                 <span class="opp-tag">{medallas_opp[i_op]}</span>
-                                <span class="opp-source">Mejor: {html_lib.escape(fuente_op)}</span>
+                                <span class="opp-source">FUT.GG</span>
                             </div>
                             <div class="opp-name" title="{html_lib.escape(nom_op)}">{html_lib.escape(nom_op)}</div>
-                            <div class="opp-sub">FB: <span class="mono">{fb_txt}</span> · GG: <span class="mono">{gg_txt}</span> · {html_lib.escape(senal_op[:28])}</div>
+                            <div class="opp-sub">Piso: <span class="mono">{min_txt}</span> · Prom: <span class="mono">{prom_txt}</span> · {html_lib.escape(senal_op[:28])}</div>
                             <div class="opp-grid">
                                 <div class="opp-metric">
-                                    <div class="opp-metric-lbl">Mejor Precio</div>
+                                    <div class="opp-metric-lbl">Precio FUT.GG</div>
                                     <div class="opp-metric-val">{p_act_op:,}</div>
                                 </div>
                                 <div class="opp-metric">
@@ -3384,9 +3352,9 @@ try:
                         """, unsafe_allow_html=True)
 
         st.markdown("---")
-        st.subheader("⚡ Padrón Dual Interactivo (Límite Desbloqueado hasta 15,000,000 mnds + Compra 1-Clic)")
+        st.subheader("⚡ Padrón Interactivo — Base Exclusiva FUT.GG (Hasta 10,000 cartas | 15M + Compra 1-Clic)")
 
-        # MEJORA 3: FILTRO DE PRECIO MÁXIMO AMPLIADO HASTA 15,000,000 DE MONEDAS + FILTROS ARBITRAJE/CRASH/DESFASE
+        # FILTROS SOBRE EL PADRÓN COMPLETO DE HASTA 10,000 CARTAS Y TOPE HASTA 15,000,000 MONEDAS
         c_f1, c_f2, c_f3, c_f4 = st.columns([1.8, 1.4, 1.1, 1.3])
         with c_f1:
             busqueda_jug = st.text_input("🔍 Filtrar por Nombre, Media o Tipo de Carta", placeholder="Ej: 86, TOTW, Mbappe...")
@@ -3398,8 +3366,6 @@ try:
                     "🟢 COMPRAR",
                     "⚡ Flipping Rápido",
                     "💎 Mínimo Histórico",
-                    "⚖️ Arbitraje FB vs GG (12%–45%)",
-                    "🔎 Posible Desfase Versión/Precio (>45%)",
                     "💥 Flash Crash Intradía (Caída <= -15%)",
                     "📦 Out of Packs / Especiales (TOTW & Promos)",
                     "🔴 VENDER",
@@ -3411,13 +3377,21 @@ try:
         with c_f4:
             tope_precio_filtro = st.number_input("Precio Máximo (Hasta 15M)", min_value=500, max_value=TOPE_RADAR_MAXIMO, value=TOPE_RADAR_MAXIMO, step=25000)
 
-        tope_slider_radar = st.slider(
-            "🎚️ Ajustar Rango de Precio Máximo con Deslizador (Monedas)",
-            min_value=500,
-            max_value=TOPE_RADAR_MAXIMO,
-            value=int(tope_precio_filtro),
-            step=10000
-        )
+        c_sl1, c_sl2 = st.columns([3.2, 1.0])
+        with c_sl1:
+            tope_slider_radar = st.slider(
+                "🎚️ Ajustar Rango de Precio Máximo con Deslizador (Monedas)",
+                min_value=500,
+                max_value=TOPE_RADAR_MAXIMO,
+                value=int(tope_precio_filtro),
+                step=10000
+            )
+        with c_sl2:
+            max_filas_tabla = st.selectbox(
+                "Máximo de filas a mostrar en tabla",
+                [300, 1000, 3000, 10000],
+                index=1
+            )
         tope_final_radar = min(int(tope_precio_filtro), int(tope_slider_radar)) if tope_slider_radar != TOPE_RADAR_MAXIMO else int(tope_precio_filtro)
 
         if not df_ult_corte.empty:
@@ -3432,25 +3406,6 @@ try:
                 df_filtrado = df_filtrado[df_filtrado["Senal_Trading"].astype(str).str.contains("⚡", na=False)]
             elif filtro_accion == "💎 Mínimo Histórico" and "Estado_Historico" in df_filtrado.columns:
                 df_filtrado = df_filtrado[df_filtrado["Estado_Historico"].astype(str).str.contains("💎", na=False)]
-            elif filtro_accion == "⚖️ Arbitraje FB vs GG (12%–45%)":
-                p_fb_s = df_filtrado["Precio_Futbin"].apply(num_seguro) if "Precio_Futbin" in df_filtrado.columns else pd.Series(0, index=df_filtrado.index)
-                p_gg_s = df_filtrado["Precio_FUTGG"].apply(num_seguro) if "Precio_FUTGG" in df_filtrado.columns else pd.Series(0, index=df_filtrado.index)
-                min_s = np.minimum(p_fb_s, p_gg_s).replace(0, np.nan)
-                max_s = np.maximum(p_fb_s, p_gg_s)
-                brecha_s = (max_s - min_s) / min_s
-                neto_s = (max_s * 0.95) - min_s
-                min_neto_req = min_s.fillna(0).apply(ganancia_neta_minima_real)
-                df_filtrado = df_filtrado[(p_fb_s > 0) & (p_gg_s > 0) & (brecha_s >= 0.12) & (brecha_s <= (UMBRAL_DESFASE_VERSION_PCT / 100.0)) & (neto_s >= min_neto_req)]
-            elif filtro_accion == "🔎 Posible Desfase Versión/Precio (>45%)":
-                p_fb_s = df_filtrado["Precio_Futbin"].apply(num_seguro) if "Precio_Futbin" in df_filtrado.columns else pd.Series(0, index=df_filtrado.index)
-                p_gg_s = df_filtrado["Precio_FUTGG"].apply(num_seguro) if "Precio_FUTGG" in df_filtrado.columns else pd.Series(0, index=df_filtrado.index)
-                min_s = np.minimum(p_fb_s, p_gg_s).replace(0, np.nan)
-                max_s = np.maximum(p_fb_s, p_gg_s)
-                brecha_s = (max_s - min_s) / min_s
-                mask_desf = (p_fb_s > 0) & (p_gg_s > 0) & (brecha_s > (UMBRAL_DESFASE_VERSION_PCT / 100.0))
-                if "Senal_Trading" in df_filtrado.columns:
-                    mask_desf = mask_desf | df_filtrado["Senal_Trading"].astype(str).str.contains("🔎", na=False)
-                df_filtrado = df_filtrado[mask_desf]
             elif filtro_accion == "💥 Flash Crash Intradía (Caída <= -15%)" and "Variacion_Bruta_%" in df_filtrado.columns:
                 mask_fc = pd.to_numeric(df_filtrado["Variacion_Bruta_%"], errors="coerce").fillna(0) <= -15.0
                 if "Senal_Trading" in df_filtrado.columns:
@@ -3463,24 +3418,33 @@ try:
             elif filtro_accion == "⚠️ Evitar Cuchillo" and "Senal_Trading" in df_filtrado.columns:
                 df_filtrado = df_filtrado[df_filtrado["Senal_Trading"].astype(str).str.contains("⚠️", na=False)]
 
+            if "Enlace_Optimo" not in df_filtrado.columns and "Enlace_Futbin" in df_filtrado.columns:
+                df_filtrado["Enlace_Optimo"] = df_filtrado["Enlace_Futbin"]
+
             cols_mostrar = [c for c in [
-                "Jugador", "Precio_Actual", "Fuente_Mejor_Precio", "Precio_Futbin", "Precio_FUTGG",
+                "Jugador", "Precio_Actual",
                 "Variacion_Bruta_%", "Senal_Trading", "Puja_Max_10%_ROI", "Break_Even_5%", "Precio_Lazy_Sugerido", "Enlace_Optimo"
             ] if c in df_filtrado.columns]
 
-            df_editor_padron = df_filtrado[cols_mostrar].head(5000).copy()
+            df_editor_padron = df_filtrado[cols_mostrar].head(int(max_filas_tabla)).copy()
             df_editor_padron.insert(0, "Comprar_1Clic", False)
+
+            st.caption(
+                f"Mostrando **{len(df_editor_padron):,}** de **{len(df_filtrado):,}** cartas filtradas · "
+                f"Padrón total FUT.GG: **{len(df_ult_corte):,}** cartas"
+            )
 
             edicion_padron = st.data_editor(
                 df_editor_padron, use_container_width=True, hide_index=True,
                 disabled=[c for c in df_editor_padron.columns if c != "Comprar_1Clic"],
                 column_config={
                     "Comprar_1Clic": st.column_config.CheckboxColumn("🛒 Comprar"),
-                    "Precio_Actual": st.column_config.NumberColumn("💰 Mejor Precio", format="%d mnds"),
+                    "Precio_Actual": st.column_config.NumberColumn("💰 Precio FUT.GG", format="%d mnds"),
                     "Variacion_Bruta_%": st.column_config.NumberColumn("📊 Var %", format="%+.1f%%"),
                     "Puja_Max_10%_ROI": st.column_config.NumberColumn(f"🔨 Puja (+{roi_puja_pct}%)", format="%d mnds"),
+                    "Break_Even_5%": st.column_config.NumberColumn("⚖️ Break-Even 5%", format="%d mnds"),
                     "Precio_Lazy_Sugerido": st.column_config.NumberColumn(f"🎯 Lazy (+{lazy_pct}%)", format="%d mnds"),
-                    "Enlace_Optimo": st.column_config.LinkColumn("🔗 Link", display_text="Ver Carta")
+                    "Enlace_Optimo": st.column_config.LinkColumn("🔗 FUT.GG", display_text="Ver Carta")
                 }
             )
 
@@ -3895,7 +3859,7 @@ try:
             st.markdown(f"""
             <div class="ia-card-report">
                 <div class="ia-card-head">
-                    <span class="ia-card-head-title">🤖 Reporte Estratégico Dual</span>
+                    <span class="ia-card-head-title">🤖 Reporte Estratégico FUT.GG</span>
                     <span class="ia-live-chip">LIVE AI · {html_lib.escape(etiqueta_plat)}</span>
                 </div>
                 <div class="ia-card-body">{rep_html_limpio}</div>
@@ -3917,7 +3881,7 @@ try:
         st.markdown("""
         <div class="chat-section-header">
             <div class="chat-section-title">💬 Consultor Táctico IA Interactivo</div>
-            <div class="chat-section-sub">Hacé preguntas personalizadas sobre el padrón vivo, tu liquidez y tu cartera activa (descontando 5% de EA Tax).</div>
+            <div class="chat-section-sub">Hacé preguntas personalizadas sobre el padrón FUT.GG (hasta 10,000 cartas), tu liquidez y tu cartera activa (descontando 5% de EA Tax).</div>
         </div>
         """, unsafe_allow_html=True)
         with st.form("form_chat_ia"):
@@ -3930,7 +3894,7 @@ try:
             if btn_preguntar_ia and pregunta_usuario.strip():
                 with st.spinner("🤖 Analizando tu consulta contra la base de datos en vivo..."):
                     df_disp_q = df_ult_corte[df_ult_corte["Precio_Actual"].apply(num_seguro) <= max(presupuesto_usuario, liquidez_disp)].head(25) if not df_ult_corte.empty else pd.DataFrame()
-                    cols_q = [c for c in ["Jugador", "Precio_Actual", "Fuente_Mejor_Precio", "Variacion_Bruta_%", "Senal_Trading", "Puja_Max_10%_ROI", "Precio_Lazy_Sugerido"] if c in df_disp_q.columns]
+                    cols_q = [c for c in ["Jugador", "Precio_Actual", "Variacion_Bruta_%", "Senal_Trading", "Puja_Max_10%_ROI", "Precio_Lazy_Sugerido"] if c in df_disp_q.columns]
                     muestra_q = df_disp_q[cols_q].to_string(index=False) if not df_disp_q.empty else "Sin datos."
                     cartera_q = ", ".join([f"{c['Jugador']} (Costo {c['Costo_Pagado']:,}, Hoy {c['Mercado_Hoy']:,})" for c in filas_cartera_viva]) if filas_cartera_viva else "Sin cartas activas."
 
