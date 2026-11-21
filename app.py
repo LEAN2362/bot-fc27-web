@@ -11,13 +11,14 @@ import json
 import math
 import time
 import unicodedata
+import html as html_lib
 import requests
 import traceback
 from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
 
 # ==========================================
-# CONFIGURACIÓN DE PÁGINA Y ESTÉTICA FULL COLOR
+# CONFIGURACIÓN DE PÁGINA Y SISTEMA DE DISEÑO FINTECH
 # ==========================================
 st.set_page_config(
     page_title="FC27 Trading Terminal Pro (Cloud)",
@@ -57,140 +58,916 @@ NOMBRE_SHEET = "Base_Datos_FC27"
 
 st.markdown("""
 <style>
-    .stApp {
-        background: radial-gradient(circle at top right, #1a103c 0%, #0b0f19 55%, #070a12 100%);
-        color: #f0f6fc;
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+    :root {
+        --bg-deep: #090d16;
+        --bg-surface: rgba(17, 24, 39, 0.72);
+        --bg-surface-strong: rgba(15, 23, 42, 0.88);
+        --border-subtle: rgba(255, 255, 255, 0.08);
+        --border-hover: rgba(255, 255, 255, 0.16);
+        --text-primary: #f1f5f9;
+        --text-secondary: #94a3b8;
+        --accent-emerald: #10b981;
+        --accent-cyan: #38bdf8;
+        --accent-amber: #f59e0b;
+        --accent-crimson: #ef4444;
     }
+
+    /* Ocultar chrome genérico de Streamlit y optimizar espacio útil */
+    #MainMenu { visibility: hidden; }
+    footer { visibility: hidden; }
+    header[data-testid="stHeader"] {
+        background: rgba(9, 13, 22, 0.55) !important;
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    html, body, .stApp, [class*="css"] {
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    }
+
+    .stApp {
+        background:
+            radial-gradient(ellipse 80% 45% at 12% 0%, rgba(16, 185, 129, 0.09) 0%, transparent 60%),
+            radial-gradient(ellipse 65% 40% at 88% 0%, rgba(56, 189, 248, 0.08) 0%, transparent 55%),
+            #090d16 !important;
+        color: var(--text-primary);
+    }
+
+    .block-container {
+        padding-top: 1.35rem !important;
+        padding-bottom: 2.5rem !important;
+        max-width: 1520px;
+    }
+
+    .mono {
+        font-family: 'JetBrains Mono', monospace !important;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
+    }
+
+    /* Sidebar Fintech */
     section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #111625 0%, #191233 100%) !important;
-        border-right: 1px solid #2e3c56;
+        background: linear-gradient(180deg, #0b1120 0%, #090d16 100%) !important;
+        border-right: 1px solid rgba(255, 255, 255, 0.07) !important;
+    }
+    section[data-testid="stSidebar"] .block-container {
+        padding-top: 1.1rem !important;
     }
     section[data-testid="stSidebar"] * {
-        color: #e6edf3 !important;
+        color: #e2e8f0 !important;
     }
-    section[data-testid="stSidebar"] input, section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
-        background-color: #1e2638 !important;
-        color: #ffffff !important;
-        border: 1px solid #3b4c6b !important;
-    }
-    div.stButton > button, div[data-testid="stFormSubmitButton"] > button, div[data-testid="stDownloadButton"] > button {
-        background: linear-gradient(90deg, #00c853 0%, #00e676 50%, #00b0ff 100%) !important;
-        color: #070a12 !important;
-        font-weight: 800 !important;
-        border: none !important;
+    section[data-testid="stSidebar"] input,
+    section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
+        background-color: rgba(15, 23, 42, 0.85) !important;
+        color: #f8fafc !important;
+        border: 1px solid rgba(255, 255, 255, 0.10) !important;
         border-radius: 10px !important;
-        padding: 10px 16px !important;
-        box-shadow: 0 4px 15px rgba(0, 230, 118, 0.35) !important;
     }
+    .sb-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(17, 24, 39, 0.72);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        margin-bottom: 10px;
+    }
+    .sb-brand-title {
+        font-size: 1.02rem;
+        font-weight: 800;
+        color: #f8fafc !important;
+        letter-spacing: -0.02em;
+        line-height: 1.15;
+    }
+    .sb-brand-sub {
+        font-size: 0.72rem;
+        color: #94a3b8 !important;
+        margin-top: 2px;
+    }
+    .sb-divider {
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.10), transparent);
+        margin: 14px 0;
+    }
+    .sb-section-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #64748b !important;
+        margin-bottom: 6px;
+    }
+
+    /* Botones con micro-interacción */
+    div.stButton > button,
+    div[data-testid="stFormSubmitButton"] > button,
+    div[data-testid="stDownloadButton"] > button {
+        background: linear-gradient(135deg, #10b981 0%, #0ea5e9 100%) !important;
+        color: #041016 !important;
+        font-family: 'Plus Jakarta Sans', sans-serif !important;
+        font-weight: 800 !important;
+        font-size: 0.86rem !important;
+        letter-spacing: -0.01em;
+        border: 1px solid rgba(255, 255, 255, 0.14) !important;
+        border-radius: 10px !important;
+        padding: 0.55rem 1rem !important;
+        box-shadow: 0 4px 16px rgba(16, 185, 129, 0.22) !important;
+        transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease !important;
+    }
+    div.stButton > button:hover,
+    div[data-testid="stFormSubmitButton"] > button:hover,
+    div[data-testid="stDownloadButton"] > button:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 8px 24px rgba(14, 165, 233, 0.32) !important;
+        filter: brightness(1.06);
+    }
+
+    /* Badges compactos de modo */
+    .mode-badge-admin, .mode-badge-club, .mode-badge-guest {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 7px 11px;
+        border-radius: 9px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-align: center;
+        margin: 6px 0 8px 0;
+        letter-spacing: 0.01em;
+    }
+    .mode-badge-admin {
+        background: rgba(16, 185, 129, 0.14);
+        border: 1px solid rgba(16, 185, 129, 0.35);
+        color: #34d399 !important;
+    }
+    .mode-badge-club {
+        background: rgba(245, 158, 11, 0.14);
+        border: 1px solid rgba(245, 158, 11, 0.35);
+        color: #fbbf24 !important;
+    }
+    .mode-badge-guest {
+        background: rgba(56, 189, 248, 0.12);
+        border: 1px solid rgba(56, 189, 248, 0.30);
+        color: #7dd3fc !important;
+    }
+
+    /* Ticket Financiero Calculadora Rápida (Sidebar) */
+    .calc-ticket {
+        background: rgba(17, 24, 39, 0.82);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        border-top: 3px solid #10b981;
+        border-radius: 12px;
+        padding: 12px 13px;
+        margin-top: 8px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+    .calc-ticket-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.70rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #94a3b8 !important;
+        padding-bottom: 8px;
+        border-bottom: 1px dashed rgba(255, 255, 255, 0.14);
+        margin-bottom: 8px;
+    }
+    .calc-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 4px 0;
+        font-size: 0.80rem;
+    }
+    .calc-row-lbl { color: #cbd5e1 !important; font-weight: 500; }
+    .calc-row-val {
+        font-family: 'JetBrains Mono', monospace !important;
+        font-weight: 700;
+        font-size: 0.83rem;
+        font-variant-numeric: tabular-nums;
+    }
+    .calc-ticket-foot {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px dashed rgba(255, 255, 255, 0.14);
+        font-size: 0.82rem;
+        font-weight: 700;
+    }
+
+    /* Cabecera Principal Glassmorphism */
     .main-header {
-        background: linear-gradient(120deg, #0f2027 0%, #1c1042 50%, #004d40 100%);
-        padding: 22px 28px;
+        background: rgba(17, 24, 39, 0.72);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        padding: 20px 24px;
+        border-radius: 18px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 12px 34px rgba(0, 0, 0, 0.38);
+        margin-bottom: 14px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 18px;
+        flex-wrap: wrap;
+        position: relative;
+        overflow: hidden;
+    }
+    .main-header::before {
+        content: "";
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 2px;
+        background: linear-gradient(90deg, #10b981 0%, #38bdf8 55%, #f59e0b 100%);
+    }
+    .header-left {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex: 1 1 420px;
+        min-width: 0;
+    }
+    .club-crest {
+        width: 54px;
+        height: 54px;
+        border-radius: 14px;
+        background: rgba(15, 23, 42, 0.9);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 6px 18px rgba(0, 0, 0, 0.35);
+    }
+    .header-title-wrap { min-width: 0; }
+    .main-header h1 {
+        margin: 0;
+        font-size: 1.55rem;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        color: #f8fafc;
+        line-height: 1.2;
+    }
+    .header-club-sub {
+        font-size: 0.80rem;
+        color: #94a3b8;
+        margin-top: 2px;
+        font-weight: 600;
+    }
+    .header-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-top: 10px;
+    }
+    .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        background: rgba(15, 23, 42, 0.78);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        color: #cbd5e1;
+    }
+    .status-pill b {
+        font-family: 'JetBrains Mono', monospace;
+        color: #f8fafc;
+        font-weight: 700;
+    }
+    .drop-timer {
+        background: rgba(9, 13, 22, 0.78);
+        border: 1px solid rgba(56, 189, 248, 0.24);
+        padding: 12px 18px;
+        border-radius: 14px;
+        text-align: right;
+        min-width: 215px;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    }
+    .drop-timer-title {
+        font-size: 0.70rem;
+        color: #38bdf8;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+    }
+    .drop-timer-val {
+        font-family: 'JetBrains Mono', monospace !important;
+        font-size: 1.40rem;
+        font-weight: 800;
+        color: #f8fafc;
+        margin: 2px 0;
+        font-variant-numeric: tabular-nums;
+    }
+    .drop-timer-sub {
+        font-size: 0.74rem;
+        color: #94a3b8;
+        font-weight: 500;
+    }
+
+    /* Semáforo y Calendario EA */
+    .status-strip-card {
+        background: rgba(17, 24, 39, 0.72);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 14px;
+        padding: 13px 16px;
+        margin-bottom: 14px;
+        transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+    }
+    .status-strip-card:hover {
+        transform: translateY(-2px);
+        border-color: rgba(255, 255, 255, 0.15);
+    }
+    .status-strip-title {
+        font-weight: 800;
+        font-size: 0.88rem;
+        letter-spacing: -0.01em;
+    }
+    .status-strip-desc {
+        font-size: 0.80rem;
+        color: #94a3b8;
+        margin-top: 4px;
+        line-height: 1.45;
+    }
+
+    /* 5 Tarjetas KPI Dark-Glass */
+    .kpi-card {
+        background: rgba(17, 24, 39, 0.72);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 16px;
-        border: 1px solid #00e676;
-        box-shadow: 0 8px 25px rgba(0, 230, 118, 0.18);
-        margin-bottom: 20px;
+        padding: 16px 16px 14px 16px;
+        color: #f8fafc;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.30);
+        margin-bottom: 12px;
+        transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        position: relative;
+        overflow: hidden;
+    }
+    .kpi-card:hover {
+        transform: translateY(-3px);
+        border-color: rgba(255, 255, 255, 0.18);
+        box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45);
+    }
+    .kpi-green { border-top: 3px solid #10b981; }
+    .kpi-blue { border-top: 3px solid #38bdf8; }
+    .kpi-teal { border-top: 3px solid #2dd4bf; }
+    .kpi-gold { border-top: 3px solid #f59e0b; }
+    .kpi-crimson { border-top: 3px solid #ef4444; }
+    .kpi-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+    .kpi-title {
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: #94a3b8;
+    }
+    .kpi-icon {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.90rem;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.07);
+    }
+    .kpi-value {
+        font-family: 'JetBrains Mono', monospace !important;
+        font-size: 1.32rem;
+        font-weight: 800;
+        color: #f8fafc;
+        margin-bottom: 10px;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.03em;
+    }
+    .kpi-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 3px 9px;
+        border-radius: 999px;
+        font-size: 0.73rem;
+        font-weight: 600;
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        color: #cbd5e1;
+        font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Barra dinámica de 100 huecos de transferencias */
+    .transfer-bar-wrap {
+        background: rgba(17, 24, 39, 0.72);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        padding: 11px 16px;
+        margin: 4px 0 14px 0;
+    }
+    .transfer-bar-top {
         display: flex;
         justify-content: space-between;
         align-items: center;
         flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 8px;
+        font-size: 0.80rem;
+        font-weight: 600;
+        color: #cbd5e1;
     }
-    .main-header h1 {
-        margin: 0;
-        font-size: 1.95rem;
-        font-weight: 900;
-        background: linear-gradient(90deg, #00e676, #00e5ff, #ffea00);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
+    .transfer-track {
+        width: 100%;
+        height: 9px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.07);
+        overflow: hidden;
     }
-    .main-header p {
-        margin: 6px 0 0 0;
-        color: #e2e8f0;
-        font-size: 0.96rem;
+    .transfer-fill {
+        height: 100%;
+        border-radius: 999px;
+        transition: width 0.35s ease;
     }
-    .drop-timer {
-        background: rgba(0, 0, 0, 0.45);
-        border: 1px solid #00e5ff;
-        padding: 10px 18px;
-        border-radius: 12px;
-        text-align: right;
+
+    /* Top 3 Oportunidades (Pestaña 2) */
+    .opp-card {
+        background: rgba(17, 24, 39, 0.72);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-left: 3px solid #10b981;
+        border-radius: 15px;
+        padding: 15px 16px;
+        margin-bottom: 14px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.30);
+        transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
     }
-    .drop-timer-title { font-size: 0.78rem; color: #84ffff; text-transform: uppercase; font-weight: 700; }
-    .drop-timer-val { font-size: 1.35rem; font-weight: 900; color: #ffea00; }
-    .kpi-card {
-        padding: 16px 14px;
-        border-radius: 14px;
-        color: white;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+    .opp-card:hover {
+        transform: translateY(-3px);
+        border-color: rgba(16, 185, 129, 0.40);
+        box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45);
+    }
+    .opp-rank-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+    }
+    .opp-tag {
+        font-size: 0.69rem;
+        font-weight: 700;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(16, 185, 129, 0.14);
+        color: #34d399;
+        border: 1px solid rgba(16, 185, 129, 0.28);
+    }
+    .opp-source {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.70rem;
+        font-weight: 700;
+        padding: 3px 8px;
+        border-radius: 6px;
+        background: rgba(56, 189, 248, 0.14);
+        color: #7dd3fc;
+        border: 1px solid rgba(56, 189, 248, 0.25);
+    }
+    .opp-name {
+        font-size: 1.02rem;
+        font-weight: 800;
+        color: #f8fafc;
+        margin-bottom: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .opp-sub {
+        font-size: 0.75rem;
+        color: #94a3b8;
         margin-bottom: 10px;
     }
-    .kpi-title { font-size: 0.80rem; font-weight: 700; text-transform: uppercase; opacity: 0.92; margin-bottom: 6px; }
-    .kpi-value { font-size: 1.35rem; font-weight: 900; margin-bottom: 8px; white-space: nowrap; }
-    .kpi-badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; background: rgba(0, 0, 0, 0.35); }
-    .kpi-green { background: linear-gradient(135deg, #054f31 0%, #00a86b 100%); border: 1px solid #00e676; }
-    .kpi-blue { background: linear-gradient(135deg, #0d2b6b 0%, #1e62d0 100%); border: 1px solid #00e5ff; }
-    .kpi-purple { background: linear-gradient(135deg, #3b0d6b 0%, #7b2cbf 100%); border: 1px solid #e040fb; }
-    .kpi-gold { background: linear-gradient(135deg, #6b4c0d 0%, #d48806 100%); border: 1px solid #ffd600; }
-    .kpi-crimson { background: linear-gradient(135deg, #5c0d28 0%, #c9184a 100%); border: 1px solid #ff4d6d; }
-    .calc-box {
-        background: rgba(15, 32, 39, 0.75);
-        border: 1px solid #00e676;
+    .opp-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-bottom: 10px;
+    }
+    .opp-metric {
+        background: rgba(9, 13, 22, 0.62);
+        border: 1px solid rgba(255, 255, 255, 0.06);
         border-radius: 10px;
-        padding: 12px;
+        padding: 7px 9px;
+    }
+    .opp-metric-lbl {
+        font-size: 0.66rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #64748b;
+        font-weight: 700;
+    }
+    .opp-metric-val {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.90rem;
+        font-weight: 800;
+        color: #f8fafc;
+        margin-top: 2px;
+    }
+    .opp-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.75rem;
+        color: #94a3b8;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .opp-footer a {
+        color: #38bdf8;
+        text-decoration: none;
+        font-weight: 700;
+    }
+
+    /* Tarjetas SBC y Simulador Fodder (Pestaña 3) */
+    .sbc-card {
+        background: rgba(17, 24, 39, 0.72);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-top: 3px solid #10b981;
+        border-radius: 15px;
+        padding: 16px 18px;
+        margin-bottom: 14px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.30);
+    }
+    .sbc-card-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 12px;
+    }
+    .sbc-card-title {
+        font-size: 0.96rem;
+        font-weight: 800;
+        color: #f8fafc;
+    }
+    .sbc-recipe-pill {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.76rem;
+        font-weight: 700;
+        padding: 4px 10px;
+        border-radius: 8px;
+        background: rgba(16, 185, 129, 0.14);
+        border: 1px solid rgba(16, 185, 129, 0.30);
+        color: #34d399;
+    }
+    .sbc-metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 10px;
+        margin-bottom: 12px;
+    }
+    .sbc-tile {
+        background: rgba(9, 13, 22, 0.65);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 11px;
+        padding: 10px 12px;
+    }
+    .sbc-tile-lbl {
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #94a3b8;
+        font-weight: 700;
+    }
+    .sbc-tile-val {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 1.05rem;
+        font-weight: 800;
+        color: #f8fafc;
+        margin-top: 3px;
+    }
+    .sbc-shop-list {
+        background: rgba(15, 23, 42, 0.75);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 10px;
+        padding: 9px 12px;
+        font-size: 0.80rem;
+        color: #cbd5e1;
+        line-height: 1.45;
+    }
+
+    /* Tarjetas IA y Consultor Chat (Pestaña 4) */
+    .ia-card-report, .ia-card-oracle {
+        background: rgba(17, 24, 39, 0.72);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+        overflow: hidden;
         margin-top: 8px;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34);
+        transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+    .ia-card-report:hover, .ia-card-oracle:hover {
+        transform: translateY(-2px);
+        border-color: rgba(255, 255, 255, 0.16);
+    }
+    .ia-card-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 13px 18px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        background: rgba(9, 13, 22, 0.55);
+    }
+    .ia-card-report .ia-card-head { border-top: 3px solid #10b981; }
+    .ia-card-oracle .ia-card-head { border-top: 3px solid #38bdf8; }
+    .ia-card-head-title {
+        font-size: 0.94rem;
+        font-weight: 800;
+        color: #f8fafc;
+        letter-spacing: -0.01em;
+    }
+    .ia-live-chip {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.68rem;
+        font-weight: 700;
+        padding: 3px 9px;
+        border-radius: 999px;
+        background: rgba(16, 185, 129, 0.14);
+        color: #34d399;
+        border: 1px solid rgba(16, 185, 129, 0.30);
+    }
+    .ia-card-body {
+        padding: 18px 20px;
         font-size: 0.88rem;
+        line-height: 1.68;
+        color: #e2e8f0;
     }
-    .ia-card-report {
-        background: linear-gradient(135deg, rgba(5, 79, 49, 0.45) 0%, rgba(17, 22, 37, 0.9) 100%);
-        border: 1px solid #00e676;
+    .ia-card-body p { margin: 0 0 11px 0; }
+    .ia-card-body p:last-child { margin-bottom: 0; }
+    .ia-card-body h4 {
+        margin: 14px 0 6px 0;
+        font-size: 0.92rem;
+        font-weight: 800;
+        color: #38bdf8;
+    }
+    .ia-card-body code {
+        font-family: 'JetBrains Mono', monospace;
+        background: rgba(56, 189, 248, 0.12);
+        color: #7dd3fc;
+        padding: 2px 6px;
+        border-radius: 5px;
+        font-size: 0.82rem;
+    }
+    .chat-section-header {
+        background: rgba(17, 24, 39, 0.72);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-left: 3px solid #f59e0b;
         border-radius: 14px;
-        padding: 18px 22px;
-        margin-top: 10px;
-        line-height: 1.55;
+        padding: 14px 18px;
+        margin: 22px 0 12px 0;
     }
-    .ia-card-oracle {
-        background: linear-gradient(135deg, rgba(59, 13, 107, 0.45) 0%, rgba(17, 22, 37, 0.9) 100%);
-        border: 1px solid #00e5ff;
+    .chat-section-title {
+        font-size: 1.02rem;
+        font-weight: 800;
+        color: #f8fafc;
+    }
+    .chat-section-sub {
+        font-size: 0.80rem;
+        color: #94a3b8;
+        margin-top: 3px;
+    }
+    .chat-response-box {
+        background: rgba(15, 23, 42, 0.82);
+        border: 1px solid rgba(56, 189, 248, 0.22);
         border-radius: 14px;
-        padding: 18px 22px;
-        margin-top: 10px;
-        line-height: 1.55;
+        padding: 16px 18px;
+        margin-top: 12px;
+        font-size: 0.88rem;
+        line-height: 1.65;
+        color: #e2e8f0;
     }
+
+    /* Podio Ranking de Clubes (Pestaña 5) */
+    .podium-card {
+        background: rgba(17, 24, 39, 0.72);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+        padding: 16px 18px;
+        margin-bottom: 14px;
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.34);
+        transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+    .podium-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 14px 32px rgba(0, 0, 0, 0.48);
+    }
+    .podium-gold { border-top: 4px solid #f59e0b; background: linear-gradient(180deg, rgba(245, 158, 11, 0.12) 0%, rgba(17, 24, 39, 0.78) 55%); }
+    .podium-silver { border-top: 4px solid #cbd5e1; background: linear-gradient(180deg, rgba(203, 213, 225, 0.09) 0%, rgba(17, 24, 39, 0.78) 55%); }
+    .podium-bronze { border-top: 4px solid #d97706; background: linear-gradient(180deg, rgba(217, 119, 6, 0.10) 0%, rgba(17, 24, 39, 0.78) 55%); }
+    .podium-rank {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.75rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 5px;
+    }
+    .podium-club {
+        font-size: 1.05rem;
+        font-weight: 800;
+        color: #f8fafc;
+        margin-bottom: 10px;
+    }
+    .podium-patrimonio {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 1.30rem;
+        font-weight: 800;
+        color: #f8fafc;
+        margin-bottom: 8px;
+    }
+    .podium-meta {
+        display: flex;
+        justify-content: space-between;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.75rem;
+        color: #94a3b8;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255, 255, 255, 0.07);
+    }
+    .vs-card {
+        background: rgba(17, 24, 39, 0.72);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-top: 3px solid #38bdf8;
+        border-radius: 14px;
+        padding: 15px 16px;
+        margin-top: 10px;
+    }
+
+    /* Banner Sniper */
     .sniper-banner {
-        background: linear-gradient(90deg, #5c0d28 0%, #b5179e 50%, #0d2b6b 100%);
-        border: 2px solid #ffea00;
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.18) 0%, rgba(17, 24, 39, 0.90) 60%, rgba(245, 158, 11, 0.16) 100%);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(245, 158, 11, 0.55);
+        border-left: 4px solid #f59e0b;
         border-radius: 14px;
-        padding: 14px 20px;
-        margin-bottom: 16px;
-        box-shadow: 0 0 25px rgba(255, 234, 0, 0.4);
+        padding: 14px 18px;
+        margin-bottom: 14px;
+        box-shadow: 0 8px 26px rgba(245, 158, 11, 0.15);
+        font-size: 0.88rem;
+        line-height: 1.55;
     }
-    .mode-badge-admin {
-        background: rgba(0, 230, 118, 0.2);
-        border: 1px solid #00e676;
-        color: #00e676;
-        padding: 6px 10px;
-        border-radius: 8px;
-        font-size: 0.82rem;
-        font-weight: 700;
-        text-align: center;
-        margin-bottom: 8px;
+
+    /* Pestañas estilo Terminal Fintech */
+    div[data-baseweb="tab-list"] {
+        gap: 6px;
+        background: rgba(17, 24, 39, 0.72);
+        backdrop-filter: blur(12px);
+        padding: 6px;
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        margin-bottom: 14px;
     }
-    .mode-badge-guest {
-        background: rgba(0, 229, 255, 0.18);
-        border: 1px solid #00e5ff;
-        color: #84ffff;
-        padding: 6px 10px;
-        border-radius: 8px;
-        font-size: 0.82rem;
-        font-weight: 700;
-        text-align: center;
-        margin-bottom: 8px;
+    button[data-baseweb="tab"] {
+        font-family: 'Plus Jakarta Sans', sans-serif !important;
+        font-size: 0.88rem !important;
+        font-weight: 700 !important;
+        color: #94a3b8 !important;
+        border-radius: 10px !important;
+        padding: 9px 14px !important;
+        transition: all 0.2s ease !important;
     }
-    div[data-baseweb="tab-list"] { gap: 8px; background-color: #111625; padding: 8px; border-radius: 12px; border: 1px solid #26334d; }
-    button[data-baseweb="tab"] { font-size: 0.95rem !important; font-weight: 700 !important; color: #94a3b8 !important; border-radius: 8px !important; padding: 10px 16px !important; }
-    button[data-baseweb="tab"][aria-selected="true"] { background: linear-gradient(90deg, #6200ea, #00b0ff) !important; color: #ffffff !important; }
-    h2, h3 { color: #38bdf8 !important; font-weight: 800 !important; }
+    button[data-baseweb="tab"]:hover {
+        color: #f8fafc !important;
+        background: rgba(255, 255, 255, 0.05) !important;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        background: linear-gradient(135deg, #059669 0%, #0284c7 100%) !important;
+        color: #ffffff !important;
+        box-shadow: 0 4px 14px rgba(2, 132, 199, 0.28);
+    }
+
+    /* Expanders y contenedores */
+    div[data-testid="stExpander"] {
+        background: rgba(17, 24, 39, 0.55);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 14px;
+        overflow: hidden;
+    }
+    div[data-testid="stDataFrame"] {
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.07);
+    }
+    h2, h3 {
+        color: #f1f5f9 !important;
+        font-weight: 800 !important;
+        letter-spacing: -0.02em !important;
+    }
+
+    /* Responsividad móvil */
+    @media (max-width: 768px) {
+        .main-header { padding: 16px; }
+        .main-header h1 { font-size: 1.25rem; }
+        .drop-timer { width: 100%; text-align: left; }
+        .kpi-value { font-size: 1.15rem; }
+    }
 </style>
 """, unsafe_allow_html=True)
+
+def estilizar_plotly_fintech(fig, height=340, hovermode="x unified"):
+    """Aplica el tema dark-glass fintech consistente a todos los gráficos Plotly."""
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=height,
+        hovermode=hovermode,
+        font=dict(family="Plus Jakarta Sans, sans-serif", color="#e2e8f0", size=12),
+        title_font=dict(family="Plus Jakarta Sans, sans-serif", color="#f8fafc", size=14),
+        margin=dict(l=12, r=12, t=46, b=16),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(size=11, color="#94a3b8")
+        ),
+        hoverlabel=dict(
+            bgcolor="rgba(9, 13, 22, 0.94)",
+            bordercolor="rgba(56, 189, 248, 0.45)",
+            font=dict(family="JetBrains Mono, monospace", size=12, color="#f8fafc")
+        )
+    )
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor="rgba(255, 255, 255, 0.06)",
+        zerolinecolor="rgba(255, 255, 255, 0.08)",
+        tickfont=dict(family="JetBrains Mono, monospace", size=11, color="#94a3b8")
+    )
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor="rgba(255, 255, 255, 0.06)",
+        zerolinecolor="rgba(255, 255, 255, 0.08)",
+        tickfont=dict(family="JetBrains Mono, monospace", size=11, color="#94a3b8")
+    )
+    return fig
+
+def formatear_md_a_html_seguro(texto_md):
+    """Convierte texto Markdown simple de la IA en HTML limpio, escapado y con párrafos bien espaciados."""
+    if not texto_md:
+        return "<p>Sin reporte generado todavía.</p>"
+    escapado = html_lib.escape(str(texto_md))
+    lineas = escapado.splitlines()
+    bloques = []
+    for ln in lineas:
+        s = ln.strip()
+        if not s:
+            continue
+        s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
+        s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+        if s.startswith("### "):
+            bloques.append(f"<h4>{s[4:]}</h4>")
+        elif s.startswith("## "):
+            bloques.append(f"<h4>{s[3:]}</h4>")
+        elif s.startswith("# "):
+            bloques.append(f"<h4>{s[2:]}</h4>")
+        else:
+            bloques.append(f"<p>{s}</p>")
+    return "\n".join(bloques) if bloques else "<p>Sin contenido.</p>"
 
 # ==========================================
 # FUNCIONES MATEMÁTICAS, HORA, SONIDO, SALDOS Y EXCEL
@@ -1239,8 +2016,15 @@ try:
     # BARRA LATERAL COMPLETA Y PERSONALIZABLE
     # ==========================================
     with st.sidebar:
-        st.markdown("## 🛠️ Centro de Mando")
-        st.caption(estado_conexion)
+        st.markdown(f"""
+        <div class="sb-brand">
+            <div style="width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#10b981,#0ea5e9);display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;box-shadow:0 4px 12px rgba(16,185,129,0.28);">⚡</div>
+            <div style="min-width:0;">
+                <div class="sb-brand-title">Centro de Mando</div>
+                <div class="sb-brand-sub">{html_lib.escape(estado_conexion)}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         c_sb1, c_sb2 = st.columns(2)
         with c_sb1:
             if st.button("🔄 Sincronizar", use_container_width=True):
@@ -1258,11 +2042,12 @@ try:
             auto_ref = st.toggle("⏱️ Auto 60s", value=False)
 
         # 1. SISTEMA MULTIUSUARIO COMPLETO (ADMIN PIN 2362 | CUENTAS DE CLUB CON PIN | MODO INVITADO CSV)
-        st.markdown("---")
+        st.markdown('<div class="sb-divider"></div><div class="sb-section-label">🔐 Acceso & Club</div>', unsafe_allow_html=True)
         modo_acceso = st.radio(
-            "🔐 Modo de Acceso:",
+            "Modo de Acceso",
             ["👑 Admin (PIN 2362)", "🏆 Cuenta de Club (Amigos)", "👤 Invitado Libre (CSV)"],
-            index=0
+            index=0,
+            label_visibility="collapsed"
         )
         es_admin = False
         slug_club_activo = None
@@ -1276,9 +2061,9 @@ try:
             es_admin = (pin_ingresado.strip() == PIN_ADMIN_SECRETO)
             if es_admin:
                 nombre_club_activo = "👑 Club Admin Principal"
-                st.markdown('<div class="mode-badge-admin">👑 Modo Admin Activo (Tu Cartera Real)</div>', unsafe_allow_html=True)
+                st.markdown('<div class="mode-badge-admin">👑 Admin Activo · Cartera Real</div>', unsafe_allow_html=True)
             else:
-                st.markdown('<div class="mode-badge-guest">🔒 Ingresá el PIN Admin o cambiá a Cuenta de Club / Invitado</div>', unsafe_allow_html=True)
+                st.markdown('<div class="mode-badge-guest">🔒 Ingresá PIN Admin o elegí Club / Invitado</div>', unsafe_allow_html=True)
 
         elif modo_acceso == "🏆 Cuenta de Club (Amigos)":
             reg_clubes = cargar_registro_clubes()
@@ -1292,7 +2077,7 @@ try:
                     if slug_cand and pin_club_in.strip() == str(reg_clubes[slug_cand].get("pin", "")):
                         slug_club_activo = slug_cand
                         nombre_club_activo = reg_clubes[slug_cand].get("nombre", nom_sel_c)
-                        st.markdown(f'<div class="mode-badge-admin">🏆 Club Activo: {nombre_club_activo}</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="mode-badge-club">🏆 Club: {html_lib.escape(str(nombre_club_activo))}</div>', unsafe_allow_html=True)
                     else:
                         st.caption("Ingresá el PIN de tu club para desbloquear tu cartera persistente.")
                 else:
@@ -1313,7 +2098,7 @@ try:
                         st.success(f"🎉 ¡Club '{nuevo_nom_club.strip()}' creado y sincronizado! Entrá desde '🔑 Entrar'.")
                         st.rerun()
         else:
-            st.markdown('<div class="mode-badge-guest">👤 Modo Invitado (Tu Propia Cartera)</div>', unsafe_allow_html=True)
+            st.markdown('<div class="mode-badge-guest">👤 Invitado · Cartera Local CSV</div>', unsafe_allow_html=True)
 
         cartera_admin_base = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy() if datos else pd.DataFrame(columns=columnas_base_cartera)
         if os.path.exists(ARCHIVO_CARTERA_LOCAL):
@@ -1397,6 +2182,11 @@ try:
 
         # 2. CONFIGURACIÓN DEL PERFIL DE TRADER
         with st.expander("⚙️ Personalizar Mi Perfil y Reglas", expanded=False):
+            tema_club = st.selectbox(
+                "🎨 Tema Visual del Club",
+                ["🟢 Esmeralda FUT.GG", "🔵 Ciber Fintech", "🟡 Oro TOTY", "🔴 Carmesí Rivals"],
+                index=0
+            )
             pais_usuario = st.selectbox("🌍 Tu País (Hora del Drop)", list(PAISES_DROP.keys()), index=0)
             plataforma_usuario = st.radio("🎮 Plataforma de Mercado", ["🖥️ PC (Origin/EA App)", "🎮 Consola (PS5 / Xbox)"], index=0)
             presupuesto_usuario = st.number_input("💰 Mi Presupuesto Total (Monedas)", min_value=5000, max_value=15000000, step=10000, value=PRESUPUESTO_DEFAULT)
@@ -1412,9 +2202,8 @@ try:
         with c_t2:
             alerta_sonora = st.toggle("🔔 Sonido Sniper", value=True)
 
-        # 3. CALCULADORA RÁPIDA ADAPTADA AL PERFIL DEL USUARIO
-        st.markdown("---")
-        st.markdown("### 🧮 Calculadora Rápida (5% Tax)")
+        # 3. CALCULADORA RÁPIDA ADAPTADA AL PERFIL DEL USUARIO (ESTILO TICKET FINANCIERO)
+        st.markdown('<div class="sb-divider"></div><div class="sb-section-label">🧮 Calculadora Rápida (5% EA Tax)</div>', unsafe_allow_html=True)
         precio_sim = st.number_input("Precio visto en Mercado", min_value=200, max_value=15000000, step=250, value=25000)
         factor_roi = 1.0 + (roi_puja_pct / 100.0)
         factor_lazy = 1.0 + (lazy_pct / 100.0)
@@ -1425,20 +2214,43 @@ try:
         lazy_sim = redondear_escalon_ea(precio_sim * factor_lazy, hacia_arriba=True)
         sl_sim = redondear_escalon_ea((precio_sim * factor_sl) / 0.95, hacia_arriba=False)
         neto_lazy_sim = int(round((lazy_sim * 0.95) - precio_sim))
+        ea_tax_sim = int(round(lazy_sim * 0.05))
 
         st.markdown(f"""
-        <div class="calc-box">
-            🔨 <b>Pujar (+{roi_puja_pct}% ROI):</b> <span style="color:#00e676;font-weight:bold;">{puja_sim:,} mnds</span><br>
-            ⚖️ <b>Empate (5% Tax):</b> <span style="color:#84ffff;">{empate_sim:,} mnds</span><br>
-            🎯 <b>Listar Lazy (+{lazy_pct}%):</b> <span style="color:#ffea00;font-weight:bold;">{lazy_sim:,} mnds</span><br>
-            ✨ <b>Ganancia Neta Lazy:</b> <span style="color:#00e676;">+{neto_lazy_sim:,} mnds</span><br>
-            🛑 <b>Stop-Loss ({stop_loss_pct}%):</b> <span style="color:#ff5252;">{sl_sim:,} mnds</span>
+        <div class="calc-ticket">
+            <div class="calc-ticket-head">
+                <span>TICKET DE ORDEN</span>
+                <span class="mono">REF {precio_sim:,}</span>
+            </div>
+            <div class="calc-row">
+                <span class="calc-row-lbl">🔨 Puja Máx (+{roi_puja_pct}%)</span>
+                <span class="calc-row-val" style="color:#34d399;">{puja_sim:,}</span>
+            </div>
+            <div class="calc-row">
+                <span class="calc-row-lbl">⚖️ Break-Even (5%)</span>
+                <span class="calc-row-val" style="color:#7dd3fc;">{empate_sim:,}</span>
+            </div>
+            <div class="calc-row">
+                <span class="calc-row-lbl">🎯 Venta Lazy (+{lazy_pct}%)</span>
+                <span class="calc-row-val" style="color:#fbbf24;">{lazy_sim:,}</span>
+            </div>
+            <div class="calc-row">
+                <span class="calc-row-lbl">🏛️ EA Tax (5% Lazy)</span>
+                <span class="calc-row-val" style="color:#94a3b8;">-{ea_tax_sim:,}</span>
+            </div>
+            <div class="calc-row">
+                <span class="calc-row-lbl">🛑 Stop-Loss ({stop_loss_pct}%)</span>
+                <span class="calc-row-val" style="color:#f87171;">{sl_sim:,}</span>
+            </div>
+            <div class="calc-ticket-foot">
+                <span style="color:#cbd5e1;">✨ Neto Lazy</span>
+                <span class="mono" style="color:#10b981;">{neto_lazy_sim:+,} mnds</span>
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
         # 4. REGISTRAR COMPRA MANUAL (CON SOPORTE DE LOTES / CANTIDAD)
-        st.markdown("---")
-        st.markdown("### ➕ Registrar Compra Manual")
+        st.markdown('<div class="sb-divider"></div><div class="sb-section-label">➕ Registrar Compra Manual</div>', unsafe_allow_html=True)
         with st.form("form_compra", clear_on_submit=True):
             jug_c = st.text_input("Nombre del Jugador", placeholder="Ej: Odegaard")
             cant_c = st.number_input("Cantidad de Cartas (Lote)", min_value=1, max_value=100, step=1, value=1)
@@ -1473,8 +2285,7 @@ try:
                 st.rerun()
 
         # 5. CERRAR / CORREGIR VENTA (SOPORTA VENTA PARCIAL O TOTAL DE LOTES)
-        st.markdown("---")
-        st.markdown("### 💰 Cerrar / Corregir Venta")
+        st.markdown('<div class="sb-divider"></div><div class="sb-section-label">💰 Cerrar / Corregir Venta</div>', unsafe_allow_html=True)
         df_cartera_sb = datos.get("Mi_Cartera", pd.DataFrame(columns=columnas_base_cartera)).copy()
         if "Cantidad" not in df_cartera_sb.columns:
             df_cartera_sb["Cantidad"] = 1
@@ -1621,16 +2432,40 @@ try:
     etiqueta_plat = "🎮 Consola" if usar_consola else "🖥️ PC"
     tit_sem, det_sem, col_sem, tit_cal, det_cal = calcular_semaforo_y_calendario_ea(df_ult_corte)
 
+    paleta_tema = {
+        "🟢 Esmeralda FUT.GG": ("#10b981", "#38bdf8"),
+        "🔵 Ciber Fintech": ("#38bdf8", "#818cf8"),
+        "🟡 Oro TOTY": ("#f59e0b", "#fcd34d"),
+        "🔴 Carmesí Rivals": ("#ef4444", "#fb923c"),
+    }
+    acento_club_1, acento_club_2 = paleta_tema.get(tema_club, ("#10b981", "#38bdf8"))
+    escudo_svg = (
+        f'<svg width="32" height="32" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        f'<path d="M18 3L5 8.2V17.4C5 25.2 10.6 31.6 18 33.8C25.4 31.6 31 25.2 31 17.4V8.2L18 3Z" '
+        f'fill="rgba(15,23,42,0.9)" stroke="{acento_club_1}" stroke-width="2.2"/>'
+        f'<path d="M19.6 10.5L13.2 19.2H18.1L16.4 25.5L22.8 16.8H17.9L19.6 10.5Z" fill="{acento_club_2}"/>'
+        f'</svg>'
+    )
+
     st.markdown(f"""
-    <div class="main-header">
-        <div>
-            <h1>⚡ FC 27 TRADING TERMINAL PRO — CLOUD 24/7</h1>
-            <p>{estado_conexion} &nbsp;|&nbsp; {etiqueta_plat} &nbsp;|&nbsp; 📦 Padrón: <b>{len(df_ult_corte):,} cartas</b> &nbsp;|&nbsp; 🕒 Corte: <b>{ultima_act}</b></p>
+    <div class="main-header" style="border-top: 2px solid {acento_club_1};">
+        <div class="header-left">
+            <div class="club-crest" style="border-color: {acento_club_1}55;">{escudo_svg}</div>
+            <div class="header-title-wrap">
+                <h1>FC 27 TRADING TERMINAL PRO</h1>
+                <div class="header-club-sub">{html_lib.escape(str(nombre_club_activo))} &nbsp;·&nbsp; Cloud 24/7</div>
+                <div class="header-badges">
+                    <span class="status-pill">{html_lib.escape(estado_conexion)}</span>
+                    <span class="status-pill">{html_lib.escape(etiqueta_plat)}</span>
+                    <span class="status-pill">📦 Padrón <b>{len(df_ult_corte):,}</b></span>
+                    <span class="status-pill">🕒 Corte <b>{html_lib.escape(str(ultima_act))}</b></span>
+                </div>
+            </div>
         </div>
-        <div class="drop-timer">
-            <div class="drop-timer-title">🎯 Drop EA ({hora_drop_txt})</div>
-            <div class="drop-timer-val">⏰ Faltan {tiempo_drop}</div>
-            <div style="font-size:0.78rem;color:#c9d1d9;">{leyenda_drop}</div>
+        <div class="drop-timer" style="border-color: {acento_club_1}44;">
+            <div class="drop-timer-title" style="color: {acento_club_2};">🎯 Drop EA ({html_lib.escape(str(hora_drop_txt))})</div>
+            <div class="drop-timer-val">{html_lib.escape(str(tiempo_drop))}</div>
+            <div class="drop-timer-sub">{html_lib.escape(str(leyenda_drop))}</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1638,16 +2473,16 @@ try:
     c_sem1, c_sem2 = st.columns(2)
     with c_sem1:
         st.markdown(
-            f'<div style="background:rgba(17,22,37,0.85);border-left:5px solid {col_sem};padding:11px 15px;border-radius:10px;margin-bottom:14px;">'
-            f'<div style="font-weight:900;font-size:0.95rem;color:{col_sem};">🌡️ {tit_sem}</div>'
-            f'<div style="font-size:0.84rem;color:#d0d7de;margin-top:3px;">{det_sem}</div></div>',
+            f'<div class="status-strip-card" style="border-left: 3px solid {col_sem};">'
+            f'<div class="status-strip-title" style="color:{col_sem};">🌡️ {html_lib.escape(str(tit_sem))}</div>'
+            f'<div class="status-strip-desc">{html_lib.escape(str(det_sem))}</div></div>',
             unsafe_allow_html=True
         )
     with c_sem2:
         st.markdown(
-            f'<div style="background:rgba(17,22,37,0.85);border-left:5px solid #00e5ff;padding:11px 15px;border-radius:10px;margin-bottom:14px;">'
-            f'<div style="font-weight:900;font-size:0.95rem;color:#00e5ff;">{tit_cal}</div>'
-            f'<div style="font-size:0.84rem;color:#d0d7de;margin-top:3px;">{det_cal}</div></div>',
+            f'<div class="status-strip-card" style="border-left: 3px solid {acento_club_2};">'
+            f'<div class="status-strip-title" style="color:{acento_club_2};">{html_lib.escape(str(tit_cal))}</div>'
+            f'<div class="status-strip-desc">{html_lib.escape(str(det_cal))}</div></div>',
             unsafe_allow_html=True
         )
 
@@ -1872,25 +2707,41 @@ try:
         })
 
     tenencia_total = vnr_total - cap_inmovilizado
-    color_vnr = "kpi-purple" if tenencia_total >= 0 else "kpi-crimson"
+    color_vnr = "kpi-teal" if tenencia_total >= 0 else "kpi-crimson"
     pct_libre = round(liquidez_disp / base_total_patrimonio * 100)
 
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
-        st.markdown(f"""<div class="kpi-card kpi-green"><div class="kpi-title">💵 Liquidez Disponible</div><div class="kpi-value">{fmt_monedas(liquidez_disp, modo_streamer)}</div><div class="kpi-badge">🟢 {pct_libre}% disponible</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-green" style="border-top-color:{acento_club_1};"><div class="kpi-head"><span class="kpi-title">Liquidez Disponible</span><span class="kpi-icon">💵</span></div><div class="kpi-value">{fmt_monedas(liquidez_disp, modo_streamer)}</div><div class="kpi-badge">🟢 {pct_libre}% libre</div></div>""", unsafe_allow_html=True)
     with k2:
-        st.markdown(f"""<div class="kpi-card kpi-blue"><div class="kpi-title">📦 Capital Inmovilizado</div><div class="kpi-value">{fmt_monedas(cap_inmovilizado, modo_streamer)}</div><div class="kpi-badge">🃏 {total_cartas_transferibles}/100 en lista</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-blue"><div class="kpi-head"><span class="kpi-title">Capital Inmovilizado</span><span class="kpi-icon">📦</span></div><div class="kpi-value">{fmt_monedas(cap_inmovilizado, modo_streamer)}</div><div class="kpi-badge">🃏 {total_cartas_transferibles}/100 en lista</div></div>""", unsafe_allow_html=True)
     with k3:
-        st.markdown(f"""<div class="kpi-card {color_vnr}"><div class="kpi-title">📈 Stock a VNR (5% Tax)</div><div class="kpi-value">{fmt_monedas(vnr_total, modo_streamer)}</div><div class="kpi-badge">⚖️ Tenencia: {fmt_monedas(tenencia_total, modo_streamer, True)}</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card {color_vnr}"><div class="kpi-head"><span class="kpi-title">Stock a VNR (5% Tax)</span><span class="kpi-icon">📈</span></div><div class="kpi-value">{fmt_monedas(vnr_total, modo_streamer)}</div><div class="kpi-badge">⚖️ {fmt_monedas(tenencia_total, modo_streamer, True)}</div></div>""", unsafe_allow_html=True)
     with k4:
-        st.markdown(f"""<div class="kpi-card kpi-gold"><div class="kpi-title">💰 Ganancia Realizada</div><div class="kpi-value">{fmt_monedas(ganancia_realizada, modo_streamer, True)}</div><div class="kpi-badge">📈 {len(vendidos)} ventas cerradas</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-gold"><div class="kpi-head"><span class="kpi-title">Ganancia Realizada</span><span class="kpi-icon">💰</span></div><div class="kpi-value">{fmt_monedas(ganancia_realizada, modo_streamer, True)}</div><div class="kpi-badge">📜 {len(vendidos)} cerradas</div></div>""", unsafe_allow_html=True)
     with k5:
-        st.markdown(f"""<div class="kpi-card kpi-purple"><div class="kpi-title">🎯 Efectividad Trading</div><div class="kpi-value">{efectividad}%</div><div class="kpi-badge">🏆 {aciertos}/{len(vendidos)} positivos</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-teal" style="border-top-color:{acento_club_2};"><div class="kpi-head"><span class="kpi-title">Efectividad Trading</span><span class="kpi-icon">🎯</span></div><div class="kpi-value">{efectividad}%</div><div class="kpi-badge">🏆 {aciertos}/{len(vendidos)} aciertos</div></div>""", unsafe_allow_html=True)
 
-    # MEDIDOR VISUAL DE 100 HUECOS DE LISTA DE TRANSFERENCIAS
+    # MEDIDOR VISUAL DINÁMICO DE 100 HUECOS DE LISTA DE TRANSFERENCIAS (VERDE / AMARILLO / ROJO)
     huecos_ocupados = min(100, total_cartas_transferibles)
     huecos_libres = max(0, 100 - total_cartas_transferibles)
-    st.progress(huecos_ocupados / 100.0, text=f"📦 Ocupación de Lista de Transferencias EA (Máx. 100 cartas): {total_cartas_transferibles}/100 ocupados ({huecos_libres} huecos libres)")
+    if total_cartas_transferibles > 90:
+        color_barra_tr, estado_barra_tr = "#ef4444", "🔴 CRÍTICO (>90%)"
+    elif total_cartas_transferibles > 75:
+        color_barra_tr, estado_barra_tr = "#f59e0b", "🟡 ALTA (>75%)"
+    else:
+        color_barra_tr, estado_barra_tr = "#10b981", "🟢 ESPACIO LIBRE"
+    st.markdown(f"""
+    <div class="transfer-bar-wrap">
+        <div class="transfer-bar-top">
+            <span>📦 Lista de Transferencias EA (Tope 100 cartas)</span>
+            <span class="mono" style="color:{color_barra_tr};font-weight:800;">{total_cartas_transferibles}/100 ocupados · {huecos_libres} libres · {estado_barra_tr}</span>
+        </div>
+        <div class="transfer-track">
+            <div class="transfer-fill" style="width:{huecos_ocupados}%;background:linear-gradient(90deg, {color_barra_tr}, {color_barra_tr}cc);box-shadow:0 0 12px {color_barra_tr}66;"></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # MEJORA 1: PANEL EN PÁGINA PARA MODIFICAR LIQUIDEZ DISPONIBLE Y CAPITAL INMOVILIZADO
     with st.expander("💳 Modificar Liquidez Disponible y Capital Inmovilizado desde la Página", expanded=False):
@@ -2116,9 +2967,10 @@ try:
                 fig_bar = px.bar(
                     df_bar_viva, x="Jugador", y=["Costo_Pagado", "Mercado_Hoy", "Precio_Lazy_1h"],
                     barmode="group", title="📦 Costo vs Mercado Hoy vs Target Lazy",
-                    color_discrete_sequence=["#2979ff", "#ff5252", "#00e676"]
+                    color_discrete_sequence=["#38bdf8", "#f43f5e", "#10b981"]
                 )
-                fig_bar.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=340)
+                fig_bar.update_traces(marker_line_width=0, opacity=0.92)
+                estilizar_plotly_fintech(fig_bar, height=340, hovermode="x unified")
                 st.plotly_chart(fig_bar, use_container_width=True)
 
         with col_g2:
@@ -2131,11 +2983,12 @@ try:
                         st.warning(f"⚠️ **Alerta de Concentración:** Tenés más del 60% de tu capital en **{r_est['Estrategia']}** (`{int(r_est['Costo_Total_Lote']):,} mnds`). Diversificá para reducir riesgo.")
             df_div = pd.DataFrame(filas_div)
             fig_pie = px.pie(
-                df_div, values="Monedas", names="Rubro", hole=0.55,
+                df_div, values="Monedas", names="Rubro", hole=0.58,
                 title="🍩 Exposición y Diversificación de Capital",
-                color_discrete_sequence=["#00e676", "#00e5ff", "#ffd600", "#ff4d6d", "#b5179e"]
+                color_discrete_sequence=["#10b981", "#38bdf8", "#f59e0b", "#f43f5e", "#a855f7"]
             )
-            fig_pie.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=340)
+            fig_pie.update_traces(marker=dict(line=dict(color="#090d16", width=2)), textfont=dict(family="JetBrains Mono, monospace", size=11))
+            estilizar_plotly_fintech(fig_pie, height=340, hovermode="closest")
             st.plotly_chart(fig_pie, use_container_width=True)
 
         with col_g3:
@@ -2147,9 +3000,10 @@ try:
                 fig_curva = px.area(
                     df_curva, x="Operacion", y="Ganancia_Acumulada",
                     markers=True, title="📈 Curva de Contribución Marginal (P&L)",
-                    color_discrete_sequence=["#00e676"]
+                    color_discrete_sequence=["#10b981"]
                 )
-                fig_curva.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=340)
+                fig_curva.update_traces(line=dict(width=2.5), fillcolor="rgba(16, 185, 129, 0.16)")
+                estilizar_plotly_fintech(fig_curva, height=340, hovermode="x unified")
                 st.plotly_chart(fig_curva, use_container_width=True)
 
         # ESTADO DE RESULTADOS + LIBRO MAYOR CON RE-COMPRA, EDICIÓN Y BORRADO + EXPORTADOR EXCEL
@@ -2327,8 +3181,13 @@ try:
                     {"Día": f"Día {d}", "Patrimonio_Proyectado": int(round(cap_inicial_proy * ((1.0 + roi_diario_proy / 100.0) ** d)))}
                     for d in range(dias_graf + 1)
                 ])
-                fig_proy = px.line(df_proy, x="Día", y="Patrimonio_Proyectado", markers=True, title=f"Proyección de Crecimiento Compuesto ({dias_graf} días)")
-                fig_proy.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=280)
+                fig_proy = px.line(
+                    df_proy, x="Día", y="Patrimonio_Proyectado", markers=True,
+                    title=f"Proyección de Crecimiento Compuesto ({dias_graf} días)",
+                    color_discrete_sequence=["#10b981"]
+                )
+                fig_proy.update_traces(line=dict(width=2.8))
+                estilizar_plotly_fintech(fig_proy, height=280, hovermode="x unified")
                 st.plotly_chart(fig_proy, use_container_width=True)
 
     # ==========================================
@@ -2367,11 +3226,13 @@ try:
                 fig_hist.add_trace(go.Scatter(
                     x=df_jug_hist["Fecha"], y=precios_serie,
                     mode="lines+markers", name=etiqueta_plat,
-                    line=dict(color="#00e5ff", width=3)
+                    line=dict(color="#38bdf8", width=2.8),
+                    fill="tozeroy",
+                    fillcolor="rgba(56, 189, 248, 0.08)"
                 ))
-                fig_hist.add_hline(y=p_min_j, line_dash="dash", line_color="#00e676", annotation_text=f"Piso ({p_min_j:,})")
-                fig_hist.add_hline(y=puja_j, line_dash="dashdot", line_color="#ffd600", annotation_text=f"Puja Máx ({puja_j:,})")
-                fig_hist.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=340)
+                fig_hist.add_hline(y=p_min_j, line_dash="dash", line_color="#10b981", annotation_text=f"Piso ({p_min_j:,})")
+                fig_hist.add_hline(y=puja_j, line_dash="dashdot", line_color="#f59e0b", annotation_text=f"Puja Máx ({puja_j:,})")
+                estilizar_plotly_fintech(fig_hist, height=340, hovermode="x unified")
                 st.plotly_chart(fig_hist, use_container_width=True)
 
         if not df_ult_corte.empty:
@@ -2444,6 +3305,83 @@ try:
                         st.dataframe(pd.DataFrame(filas_arb).head(25), use_container_width=True, hide_index=True)
                     else:
                         st.caption("Sin arbitrajes válidos (12%–45%) ni Flash Crashes rentables Post-Tax en este corte.")
+
+        # TOP 3 OPORTUNIDADES DEL MOMENTO (TARJETAS VISUALES DESTACADAS)
+        if not df_ult_corte.empty:
+            st.markdown("### 🔥 Top 3 Oportunidades del Momento")
+            df_opp = df_ult_corte[df_ult_corte["Precio_Actual"].apply(num_seguro) > 0].copy()
+            if "Senal_Trading" in df_opp.columns:
+                df_opp = df_opp[~df_opp["Senal_Trading"].astype(str).str.contains("🔎|⚠️", na=False)]
+            if not df_opp.empty:
+                df_opp["_p_act"] = df_opp["Precio_Actual"].apply(num_seguro)
+                df_opp["_p_lazy"] = df_opp["Precio_Lazy_Sugerido"].apply(num_seguro)
+                df_opp["_neto_est"] = (df_opp["_p_lazy"] * 0.95 - df_opp["_p_act"]).round().astype(int)
+                df_opp["_var_num"] = pd.to_numeric(df_opp.get("Variacion_Bruta_%", 0.0), errors="coerce").fillna(0.0)
+                df_opp["_prio"] = 0
+                if "Accion" in df_opp.columns:
+                    df_opp.loc[df_opp["Accion"].astype(str).str.contains("COMPRAR", na=False), "_prio"] += 2
+                if "Senal_Trading" in df_opp.columns:
+                    df_opp.loc[df_opp["Senal_Trading"].astype(str).str.contains("⚡|💎", na=False), "_prio"] += 1
+                top3_opp = df_opp[df_opp["_neto_est"] > 0].sort_values(
+                    by=["_prio", "_var_num", "_neto_est"],
+                    ascending=[False, True, False]
+                ).head(3)
+                if top3_opp.empty:
+                    top3_opp = df_opp.sort_values(by="_neto_est", ascending=False).head(3)
+
+                cols_opp = st.columns(max(1, len(top3_opp)))
+                medallas_opp = ["#1 TOP PICK", "#2 OPORTUNIDAD", "#3 RADAR PRO"]
+                bordes_opp = ["#10b981", "#38bdf8", "#f59e0b"]
+                for i_op, (_, r_op) in enumerate(top3_opp.iterrows()):
+                    nom_op = str(r_op.get("Jugador", "Carta"))
+                    p_act_op = num_seguro(r_op.get("Precio_Actual", 0))
+                    p_fb_op = num_seguro(r_op.get("Precio_Futbin", 0))
+                    p_gg_op = num_seguro(r_op.get("Precio_FUTGG", 0))
+                    fuente_op = str(r_op.get("Fuente_Mejor_Precio", "FB")).strip() or "FB"
+                    lazy_op = num_seguro(r_op.get("Precio_Lazy_Sugerido", 0))
+                    puja_op = num_seguro(r_op.get("Puja_Max_10%_ROI", 0))
+                    neto_op = int(round((lazy_op * 0.95) - p_act_op))
+                    var_op = float_seguro(r_op.get("Variacion_Bruta_%", 0.0))
+                    senal_op = str(r_op.get("Senal_Trading", "⚡ Oportunidad"))
+                    link_op = str(r_op.get("Enlace_Optimo", r_op.get("Enlace_Futbin", "")) or "").strip()
+                    link_html_op = f'<a href="{html_lib.escape(link_op)}" target="_blank">Abrir Carta ↗</a>' if link_op.startswith("http") else '<span>Sin enlace</span>'
+                    fb_txt = f"{p_fb_op:,}" if p_fb_op > 0 else "—"
+                    gg_txt = f"{p_gg_op:,}" if p_gg_op > 0 else "—"
+                    var_col = "#34d399" if var_op <= 0 else "#f87171"
+
+                    with cols_opp[i_op]:
+                        st.markdown(f"""
+                        <div class="opp-card" style="border-left-color:{bordes_opp[i_op]};">
+                            <div class="opp-rank-row">
+                                <span class="opp-tag">{medallas_opp[i_op]}</span>
+                                <span class="opp-source">Mejor: {html_lib.escape(fuente_op)}</span>
+                            </div>
+                            <div class="opp-name" title="{html_lib.escape(nom_op)}">{html_lib.escape(nom_op)}</div>
+                            <div class="opp-sub">FB: <span class="mono">{fb_txt}</span> · GG: <span class="mono">{gg_txt}</span> · {html_lib.escape(senal_op[:28])}</div>
+                            <div class="opp-grid">
+                                <div class="opp-metric">
+                                    <div class="opp-metric-lbl">Mejor Precio</div>
+                                    <div class="opp-metric-val">{p_act_op:,}</div>
+                                </div>
+                                <div class="opp-metric">
+                                    <div class="opp-metric-lbl">Neto Est. (5% Tax)</div>
+                                    <div class="opp-metric-val" style="color:#34d399;">{neto_op:+,}</div>
+                                </div>
+                                <div class="opp-metric">
+                                    <div class="opp-metric-lbl">Puja Máx (+{roi_puja_pct}%)</div>
+                                    <div class="opp-metric-val" style="color:#7dd3fc;">{puja_op:,}</div>
+                                </div>
+                                <div class="opp-metric">
+                                    <div class="opp-metric-lbl">Lazy Sugerido 1h</div>
+                                    <div class="opp-metric-val" style="color:#fbbf24;">{lazy_op:,}</div>
+                                </div>
+                            </div>
+                            <div class="opp-footer">
+                                <span>Var: <b class="mono" style="color:{var_col};">{var_op:+.1f}%</b></span>
+                                {link_html_op}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
         st.markdown("---")
         st.subheader("⚡ Padrón Dual Interactivo (Límite Desbloqueado hasta 15,000,000 mnds + Compra 1-Clic)")
@@ -2663,12 +3601,29 @@ try:
                 })
             df_combos = pd.DataFrame(filas_combos).sort_values(by=["Costo_Neto_A_Comprar", "Costo_Mercado_11_Cartas"])
             mejor_combo = df_combos.iloc[0]
-            st.success(
-                f"✅ **Combinación Óptima para Media {media_sbc_obj}:** `{mejor_combo['Receta_11_Cartas']}` "
-                f"➡️ **A Pagar en Mercado: `{int(mejor_combo['Costo_Neto_A_Comprar']):,} mnds`** "
-                f"(Ahorrás `{int(mejor_combo['Ahorro_Intransferibles']):,} mnds` con tus intransferibles)\n\n"
-                f"🛒 **Qué comprar hoy:** {mejor_combo['Cartas_A_Comprar_Hoy']}"
-            )
+            st.markdown(f"""
+            <div class="sbc-card">
+                <div class="sbc-card-head">
+                    <span class="sbc-card-title">✅ Combinación Óptima — Plantilla Media {media_sbc_obj}</span>
+                    <span class="sbc-recipe-pill">{html_lib.escape(str(mejor_combo['Receta_11_Cartas']))}</span>
+                </div>
+                <div class="sbc-metrics-grid">
+                    <div class="sbc-tile">
+                        <div class="sbc-tile-lbl">💵 A Pagar en Mercado</div>
+                        <div class="sbc-tile-val" style="color:#34d399;">{int(mejor_combo['Costo_Neto_A_Comprar']):,} mnds</div>
+                    </div>
+                    <div class="sbc-tile">
+                        <div class="sbc-tile-lbl">🎒 Ahorro Intransferibles</div>
+                        <div class="sbc-tile-val" style="color:#7dd3fc;">+{int(mejor_combo['Ahorro_Intransferibles']):,} mnds</div>
+                    </div>
+                    <div class="sbc-tile">
+                        <div class="sbc-tile-lbl">🏪 Costo sin Club (11 Cartas)</div>
+                        <div class="sbc-tile-val" style="color:#cbd5e1;">{int(mejor_combo['Costo_Mercado_11_Cartas']):,} mnds</div>
+                    </div>
+                </div>
+                <div class="sbc-shop-list">🛒 <b>Lista de compras hoy:</b> {html_lib.escape(str(mejor_combo['Cartas_A_Comprar_Hoy']))}</div>
+            </div>
+            """, unsafe_allow_html=True)
             st.dataframe(df_combos, use_container_width=True, hide_index=True)
 
         st.markdown("---")
@@ -2698,12 +3653,34 @@ try:
         ingreso_neto_fod = int(round(cant_cartas_fod * (p_venta_fod * 0.95)))
         ganancia_neta_fod = ingreso_neto_fod - inv_real_fod
         roi_fod = round((ganancia_neta_fod / max(1, inv_real_fod)) * 100, 1)
+        col_fod_neto = "#34d399" if ganancia_neta_fod >= 0 else "#f87171"
 
-        st.info(
-            f"📦 **Resultado de la Simulación (Media {med_sim}):** Comprás **{cant_cartas_fod} cartas** "
-            f"(Inversión: `{inv_real_fod:,} mnds`) ➡️ Al vender en `{p_venta_fod:,} mnds` recibís limpio Post-Tax "
-            f"`{ingreso_neto_fod:,} mnds` (**Ganancia Neta: `{ganancia_neta_fod:+,} mnds` | ROI: `{roi_fod:+.1f}%`**)."
-        )
+        st.markdown(f"""
+        <div class="sbc-card" style="border-top-color:#38bdf8;">
+            <div class="sbc-card-head">
+                <span class="sbc-card-title">📦 Proyección de Inversión — Fodder Media {med_sim}</span>
+                <span class="sbc-recipe-pill" style="background:rgba(56,189,248,0.14);border-color:rgba(56,189,248,0.30);color:#7dd3fc;">Compra {p_compra_fod:,} → Venta {p_venta_fod:,}</span>
+            </div>
+            <div class="sbc-metrics-grid">
+                <div class="sbc-tile">
+                    <div class="sbc-tile-lbl">🃏 Cartas a Comprar</div>
+                    <div class="sbc-tile-val">{cant_cartas_fod:,} u.</div>
+                </div>
+                <div class="sbc-tile">
+                    <div class="sbc-tile-lbl">💵 Inversión Real</div>
+                    <div class="sbc-tile-val">{inv_real_fod:,} mnds</div>
+                </div>
+                <div class="sbc-tile">
+                    <div class="sbc-tile-lbl">🏦 Ingreso Post-Tax (5%)</div>
+                    <div class="sbc-tile-val" style="color:#7dd3fc;">{ingreso_neto_fod:,} mnds</div>
+                </div>
+                <div class="sbc-tile">
+                    <div class="sbc-tile-lbl">✨ Ganancia Neta / ROI</div>
+                    <div class="sbc-tile-val" style="color:{col_fod_neto};">{ganancia_neta_fod:+,} ({roi_fod:+.1f}%)</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         st.markdown("---")
         st.subheader("🎯 Gestor Visual de Alertas Sniper (Con Alarma Web Audio + Aviso a Telegram + Conversión 1-Clic)")
@@ -2893,15 +3870,35 @@ try:
 
         col_ia1, col_ia2 = st.columns(2)
         with col_ia1:
-            st.subheader("🤖 Reporte Estratégico Dual (En Vivo)")
-            st.markdown(f'<div class="ia-card-report">{st.session_state["reporte_ia_vivo"]}</div>', unsafe_allow_html=True)
+            rep_html_limpio = formatear_md_a_html_seguro(st.session_state["reporte_ia_vivo"])
+            st.markdown(f"""
+            <div class="ia-card-report">
+                <div class="ia-card-head">
+                    <span class="ia-card-head-title">🤖 Reporte Estratégico Dual</span>
+                    <span class="ia-live-chip">LIVE AI · {html_lib.escape(etiqueta_plat)}</span>
+                </div>
+                <div class="ia-card-body">{rep_html_limpio}</div>
+            </div>
+            """, unsafe_allow_html=True)
         with col_ia2:
-            st.subheader(f"🔮 Oráculo de Contenido ({hora_drop_txt})")
-            st.markdown(f'<div class="ia-card-oracle">{st.session_state["oraculo_ia_vivo"]}</div>', unsafe_allow_html=True)
+            ora_html_limpio = formatear_md_a_html_seguro(st.session_state["oraculo_ia_vivo"])
+            st.markdown(f"""
+            <div class="ia-card-oracle">
+                <div class="ia-card-head">
+                    <span class="ia-card-head-title">🔮 Oráculo de Contenido</span>
+                    <span class="ia-live-chip" style="background:rgba(56,189,248,0.14);color:#7dd3fc;border-color:rgba(56,189,248,0.30);">DROP {html_lib.escape(str(hora_drop_txt))}</span>
+                </div>
+                <div class="ia-card-body">{ora_html_limpio}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
         # CONSULTOR TÁCTICO INTERACTIVO (PREGUNTAS PERSONALIZADAS A LA IA)
-        st.markdown("---")
-        st.subheader("💬 Consultor Táctico IA Interactivo (Preguntale lo que quieras sobre el mercado)")
+        st.markdown("""
+        <div class="chat-section-header">
+            <div class="chat-section-title">💬 Consultor Táctico IA Interactivo</div>
+            <div class="chat-section-sub">Hacé preguntas personalizadas sobre el padrón vivo, tu liquidez y tu cartera activa (descontando 5% de EA Tax).</div>
+        </div>
+        """, unsafe_allow_html=True)
         with st.form("form_chat_ia"):
             pregunta_usuario = st.text_input(
                 "Escribí tu consulta de trading (la IA lee tu padrón y tu cartera actual):",
@@ -2938,7 +3935,8 @@ try:
                         )
 
         if "respuesta_chat_ia" in st.session_state:
-            st.info(st.session_state["respuesta_chat_ia"])
+            chat_html_limpio = formatear_md_a_html_seguro(st.session_state["respuesta_chat_ia"])
+            st.markdown(f'<div class="chat-response-box">{chat_html_limpio}</div>', unsafe_allow_html=True)
 
     # ==========================================
     # PESTAÑA 5: RANKING & VERSUS DE CLUBES (COMPETENCIA MULTIUSUARIO)
@@ -3041,6 +4039,35 @@ try:
         df_ranking = pd.DataFrame(filas_ranking).sort_values(by=["Patrimonio_Total", "Ganancia_Realizada"], ascending=False).reset_index(drop=True)
         df_ranking.insert(0, "Puesto", [f"#{i+1}" for i in range(len(df_ranking))])
 
+        # PODIO VISUAL ORO / PLATA / BRONCE
+        if not df_ranking.empty:
+            top_podio = df_ranking.head(3)
+            cols_pod = st.columns(max(1, len(top_podio)))
+            cfg_podio = [
+                ("podium-gold", "🥇 #1 ORO · LÍDER", "#fbbf24"),
+                ("podium-silver", "🥈 #2 PLATA", "#e2e8f0"),
+                ("podium-bronze", "🥉 #3 BRONCE", "#f59e0b"),
+            ]
+            for i_pod, (_, r_pod) in enumerate(top_podio.iterrows()):
+                cls_pod, lbl_pod, col_pod = cfg_podio[i_pod]
+                pat_pod = int(r_pod.get("Patrimonio_Total", 0))
+                gan_pod = int(r_pod.get("Ganancia_Realizada", 0))
+                ef_pod = float(r_pod.get("Efectividad_%", 0.0))
+                tr_pod = int(r_pod.get("Trades_Cerrados", 0))
+                col_gan_pod = "#34d399" if gan_pod >= 0 else "#f87171"
+                with cols_pod[i_pod]:
+                    st.markdown(f"""
+                    <div class="podium-card {cls_pod}">
+                        <div class="podium-rank" style="color:{col_pod};">{lbl_pod}</div>
+                        <div class="podium-club">{html_lib.escape(str(r_pod.get('Club', 'Club')))}</div>
+                        <div class="podium-patrimonio">{fmt_monedas(pat_pod, modo_streamer)}</div>
+                        <div class="podium-meta">
+                            <span>Gan: <b style="color:{col_gan_pod};">{fmt_monedas(gan_pod, modo_streamer, True)}</b></span>
+                            <span>🎯 {ef_pod:.1f}% ({tr_pod})</span>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
         st.dataframe(
             df_ranking,
             use_container_width=True,
@@ -3067,9 +4094,10 @@ try:
                 y=["Liquidez_Caja", "Stock_VNR_5%", "Ganancia_Realizada"],
                 barmode="group",
                 title="📊 Comparativa de Patrimonio y Ganancia Realizada por Club",
-                color_discrete_sequence=["#00e676", "#00e5ff", "#ffd600"]
+                color_discrete_sequence=["#10b981", "#38bdf8", "#f59e0b"]
             )
-            fig_rk.update_layout(template="plotly_dark", paper_bgcolor="rgba(17,22,37,0.7)", plot_bgcolor="rgba(0,0,0,0)", height=350)
+            fig_rk.update_traces(marker_line_width=0, opacity=0.92)
+            estilizar_plotly_fintech(fig_rk, height=350, hovermode="x unified")
             st.plotly_chart(fig_rk, use_container_width=True)
 
         with col_rk2:
@@ -3086,12 +4114,30 @@ try:
                 dif_pat = int(r_vs1["Patrimonio_Total"] - r_vs2["Patrimonio_Total"])
                 dif_gan = int(r_vs1["Ganancia_Realizada"] - r_vs2["Ganancia_Realizada"])
                 lider_vs = club_vs_1 if dif_pat >= 0 else club_vs_2
-                st.info(
-                    f"🏆 **Líder del Versus:** **{lider_vs}**\n\n"
-                    f"• **Diferencia de Patrimonio:** `{dif_pat:+,} mnds` ({club_vs_1}: `{int(r_vs1['Patrimonio_Total']):,}` vs {club_vs_2}: `{int(r_vs2['Patrimonio_Total']):,}`)\n"
-                    f"• **Diferencia en Ganancia Realizada:** `{dif_gan:+,} mnds` (`{int(r_vs1['Ganancia_Realizada']):+,}` vs `{int(r_vs2['Ganancia_Realizada']):+,}`)\n"
-                    f"• **Efectividad:** `{r_vs1['Efectividad_%']}%` vs `{r_vs2['Efectividad_%']}%`"
-                )
+                col_dp = "#34d399" if dif_pat >= 0 else "#f87171"
+                col_dg = "#34d399" if dif_gan >= 0 else "#f87171"
+                st.markdown(f"""
+                <div class="vs-card">
+                    <div class="sbc-card-head" style="margin-bottom:10px;">
+                        <span class="sbc-card-title">🏆 Líder: {html_lib.escape(str(lider_vs))}</span>
+                        <span class="sbc-recipe-pill" style="color:{col_dp};">{dif_pat:+,} mnds</span>
+                    </div>
+                    <div class="sbc-metrics-grid" style="margin-bottom:0;">
+                        <div class="sbc-tile">
+                            <div class="sbc-tile-lbl">💎 Patrimonio A vs B</div>
+                            <div class="sbc-tile-val" style="font-size:0.88rem;">{int(r_vs1['Patrimonio_Total']):,} <span style="color:#64748b;">vs</span> {int(r_vs2['Patrimonio_Total']):,}</div>
+                        </div>
+                        <div class="sbc-tile">
+                            <div class="sbc-tile-lbl">💰 Dif. Ganancia Real</div>
+                            <div class="sbc-tile-val" style="font-size:0.92rem;color:{col_dg};">{dif_gan:+,} mnds</div>
+                        </div>
+                        <div class="sbc-tile">
+                            <div class="sbc-tile-lbl">🎯 Efectividad A vs B</div>
+                            <div class="sbc-tile-val" style="font-size:0.92rem;color:#7dd3fc;">{r_vs1['Efectividad_%']}% <span style="color:#64748b;">vs</span> {r_vs2['Efectividad_%']}%</div>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             else:
                 st.info("Creá una **Cuenta de Club** para tus amigos desde el menú lateral (`🏆 Cuenta de Club (Amigos)` ➡️ `➕ Crear Club`) para habilitar el duelo 1 vs 1.")
 
