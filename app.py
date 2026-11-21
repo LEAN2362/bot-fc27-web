@@ -1,6 +1,7 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import os
@@ -9,6 +10,7 @@ import re
 import json
 import math
 import time
+import unicodedata
 import requests
 import traceback
 from urllib.parse import quote
@@ -43,6 +45,7 @@ MODELOS_PREFERIDOS_IA = [
 
 PRESUPUESTO_DEFAULT = 200000
 TOPE_RADAR_MAXIMO = 15000000
+UMBRAL_DESFASE_VERSION_PCT = 45.0
 ARCHIVO_EXCEL = "Lista_Jugadores_FC27.xlsx"
 ARCHIVO_LINK_CACHE = "sheet_link_cache.txt"
 ARCHIVO_CARTERA_LOCAL = "cartera_cloud_sync.csv"
@@ -467,7 +470,7 @@ def guardar_registro_clubes(reg):
     sincronizar_clubes_cloud_sheet()
 
 def cargar_intransferibles_club(es_admin, slug_club=None):
-    defecto = {"83": 0, "84": 0, "85": 0, "86": 0, "87": 0, "88": 0, "89": 0, "IF": 0}
+    defecto = {"83": 0, "84": 0, "85": 0, "86": 0, "87": 0, "88": 0, "89": 0, "TOTW": 0}
     if slug_club and not es_admin:
         k_ss = f"intr_club_{slug_club}"
         if k_ss in st.session_state:
@@ -478,6 +481,8 @@ def cargar_intransferibles_club(es_admin, slug_club=None):
                 with open(arch_i, "r", encoding="utf-8") as f:
                     d = json.load(f)
                     defecto.update({str(k): int(v) for k, v in d.items()})
+                    if "IF" in d and "TOTW" not in d:
+                        defecto["TOTW"] = int(d["IF"])
             except Exception:
                 pass
         st.session_state[k_ss] = defecto
@@ -491,6 +496,8 @@ def cargar_intransferibles_club(es_admin, slug_club=None):
             with open(ARCHIVO_INTRANSF_ADMIN, "r", encoding="utf-8") as f:
                 d = json.load(f)
                 defecto.update({str(k): int(v) for k, v in d.items()})
+                if "IF" in d and "TOTW" not in d:
+                    defecto["TOTW"] = int(d["IF"])
         except Exception:
             pass
     st.session_state["admin_intransferibles"] = defecto
@@ -701,23 +708,85 @@ def float_seguro(val, defecto=0.0):
     except Exception:
         return defecto
 
+def sin_tildes(texto):
+    return "".join(c for c in unicodedata.normalize("NFD", str(texto)) if unicodedata.category(c) != "Mn")
+
+def paso_escalon_ea(precio):
+    if precio < 1000:
+        return 50
+    elif precio < 10000:
+        return 100
+    elif precio < 50000:
+        return 250
+    elif precio < 100000:
+        return 500
+    return 1000
+
+def es_multiplo_escalon_ea(precio, presupuesto_max=TOPE_RADAR_MAXIMO):
+    p = num_seguro(precio, 0)
+    if not (200 <= p <= presupuesto_max):
+        return False
+    return (p % paso_escalon_ea(p)) == 0
+
 def redondear_escalon_ea(precio, hacia_arriba=False):
     precio = float_seguro(precio, 0.0)
     if precio <= 0:
         return 0
-    if precio < 1000:
-        paso = 50
-    elif precio < 10000:
-        paso = 100
-    elif precio < 50000:
-        paso = 250
-    elif precio < 100000:
-        paso = 500
-    else:
-        paso = 1000
+    paso = paso_escalon_ea(precio)
     if hacia_arriba:
         return int(math.ceil(precio / paso) * paso)
     return int(math.floor(precio / paso) * paso)
+
+def calcular_break_even(precio_compra):
+    precio_compra = float_seguro(precio_compra, 0.0)
+    if precio_compra <= 0:
+        return 0
+    return redondear_escalon_ea(precio_compra / 0.95, hacia_arriba=True)
+
+def calcular_puja_maxima_segura(precio_actual_mercado, factor_roi=1.10):
+    precio_actual_mercado = float_seguro(precio_actual_mercado, 0.0)
+    if precio_actual_mercado <= 0:
+        return 0
+    return redondear_escalon_ea((precio_actual_mercado * 0.95) / factor_roi, hacia_arriba=False)
+
+def calcular_precio_lazy(precio_referencia, precio_pagado=0, max_hist=0, muestras=0, factor_lazy=1.12, factor_roi=1.10):
+    precio_referencia = float_seguro(precio_referencia, 0.0)
+    precio_pagado = float_seguro(precio_pagado, 0.0)
+    max_hist = float_seguro(max_hist, 0.0)
+    muestras = int(num_seguro(muestras, 0))
+    if precio_referencia <= 0:
+        return 0
+    base_lazy = precio_referencia * factor_lazy
+    if precio_pagado > 0:
+        min_rentable = (precio_pagado * factor_roi) / 0.95
+        base_lazy = max(base_lazy, min_rentable)
+    piso_empate = calcular_break_even(precio_pagado if precio_pagado > 0 else precio_referencia)
+    lazy_ea = redondear_escalon_ea(base_lazy, hacia_arriba=True)
+    if muestras >= 3 and max_hist > 0 and lazy_ea > max_hist:
+        techo_ea = redondear_escalon_ea(max_hist, hacia_arriba=False)
+        if techo_ea >= piso_empate:
+            return techo_ea
+        return piso_empate
+    return max(lazy_ea, piso_empate)
+
+def ganancia_neta_minima_real(precio_actual):
+    p = num_seguro(precio_actual, 0)
+    if p < 5000:
+        return 350
+    elif p <= 25000:
+        return 750
+    return 1500
+
+def precio_mercado_seguro_carta(fila_carta, fallback_precio=0):
+    if fila_carta is None:
+        return int(fallback_precio)
+    p_act = num_seguro(fila_carta.get("Precio_Actual", 0), 0)
+    if p_act > 0:
+        return p_act
+    p_fb = num_seguro(fila_carta.get("Precio_Futbin", 0), 0)
+    p_gg = num_seguro(fila_carta.get("Precio_FUTGG", 0), 0)
+    validos = [p for p in (p_fb, p_gg) if p > 0]
+    return min(validos) if validos else int(fallback_precio)
 
 def fmt_monedas(valor, ocultar=False, con_signo=False):
     if ocultar:
@@ -739,10 +808,10 @@ def autodetectar_estrategia(nombre_carta, precio):
     return "Flipping Meta"
 
 def es_carta_especial_oop(nombre_carta):
-    nom_u = str(nombre_carta).upper()
-    if any(k in nom_u for k in ["TOTW", "IN-FORM", "INFORM", " - IF)", "PROMO", "SPECIAL", "HERO", "ICON", "RTTK", "RTTF", "TRAILBLAZERS", "CENTURIONS", "THUNDERSTRUCK", "WINTER", "TOTY", "TOTS", "FUTTIES"]):
+    nom_u = sin_tildes(str(nombre_carta)).upper()
+    if any(k in nom_u for k in ["TOTW", "IN-FORM", "INFORM", " - IF)", "PROMO", "SPECIAL", "ESPECIAL", "HERO", "ICON", "EVO", "RTTK", "RTTF", "TRAILBLAZER", "CENTURION", "THUNDER", "WINTER", "WILDCARD", "TOTY", "TOTS", "FUTTIES"]):
         return True
-    if "NORMAL" not in nom_u and "GOLD" not in nom_u and "RARE" not in nom_u and "COMMON" not in nom_u and " - " in nom_u:
+    if "NORMAL" not in nom_u and "ORO" not in nom_u and "GOLD" not in nom_u and "RARE" not in nom_u and "COMMON" not in nom_u and "FUT.GG" not in nom_u and " - " in nom_u:
         return True
     return False
 
@@ -981,8 +1050,9 @@ def convertir_columnas_numericas(df):
     cols_num = [
         "Cantidad", "Precio_Pagado", "Precio_Venta", "Costo_EA_Tax", "Ganancia_Neta", "ROI_%",
         "Precio_Anterior", "Precio_Actual", "Precio_Consola", "Precio_Futbin", "Precio_FUTGG",
-        "Precio_Min_Hist", "Precio_Prom_Hist", "Puja_Max_10%_ROI", "Break_Even_5%",
-        "Precio_Lazy_Sugerido", "Variacion_Bruta_%", "Beneficio_Neto_Mnds", "Variacion_Neta_%",
+        "Precio_Min_Hist", "Precio_Max_Hist", "Precio_Prom_Hist", "Muestras_Hist",
+        "Puja_Max_10%_ROI", "Break_Even_5%", "Precio_Lazy_Sugerido",
+        "Variacion_Bruta_%", "Beneficio_Neto_Mnds", "Variacion_Neta_%",
         "Precio_Objetivo", "Margen_Neto_5%", "Brecha_%", "Subida_%", "Ganancia_Potencial_Neta",
         "Precio_Mas_Barato", "Piso_Compra", "Techo_Venta", "Precio_Base", "Precio_Explosivo",
         "Media", "Puja_Sugerida", "Target_Lazy_2da_Ola", "Puja_Max_Sugerida",
@@ -1516,14 +1586,35 @@ try:
             df_ult_corte.loc[mask_con, "Precio_Actual"] = df_ult_corte.loc[mask_con, "Precio_Consola"]
 
     if not df_ult_corte.empty and "Precio_Actual" in df_ult_corte.columns:
+        mapa_max_hist = {}
+        mapa_cnt_hist = {}
+        if not df_historial.empty and "Jugador" in df_historial.columns and "Precio_Actual" in df_historial.columns:
+            df_h_valid = df_historial[df_historial["Precio_Actual"].apply(num_seguro) > 0]
+            if not df_h_valid.empty:
+                grp_col = "Enlace_Futbin" if "Enlace_Futbin" in df_h_valid.columns else "Jugador"
+                agg_h = df_h_valid.groupby(grp_col)["Precio_Actual"].agg(["max", "count"])
+                mapa_max_hist = agg_h["max"].to_dict()
+                mapa_cnt_hist = agg_h["count"].to_dict()
+                if "Precio_Max_Hist" not in df_ult_corte.columns:
+                    df_ult_corte["Precio_Max_Hist"] = df_ult_corte[grp_col].map(mapa_max_hist).fillna(df_ult_corte["Precio_Actual"])
+                if "Muestras_Hist" not in df_ult_corte.columns:
+                    df_ult_corte["Muestras_Hist"] = df_ult_corte[grp_col].map(mapa_cnt_hist).fillna(1)
+
         df_ult_corte["Puja_Max_10%_ROI"] = df_ult_corte["Precio_Actual"].apply(
-            lambda p: redondear_escalon_ea((num_seguro(p) * 0.95) / factor_roi, hacia_arriba=False)
+            lambda p: calcular_puja_maxima_segura(p, factor_roi)
         )
         df_ult_corte["Break_Even_5%"] = df_ult_corte["Precio_Actual"].apply(
-            lambda p: redondear_escalon_ea(num_seguro(p) / 0.95, hacia_arriba=True)
+            lambda p: calcular_break_even(p)
         )
-        df_ult_corte["Precio_Lazy_Sugerido"] = df_ult_corte["Precio_Actual"].apply(
-            lambda p: redondear_escalon_ea(num_seguro(p) * factor_lazy, hacia_arriba=True)
+        df_ult_corte["Precio_Lazy_Sugerido"] = df_ult_corte.apply(
+            lambda r: calcular_precio_lazy(
+                r.get("Precio_Actual", 0),
+                max_hist=r.get("Precio_Max_Hist", 0),
+                muestras=r.get("Muestras_Hist", 0),
+                factor_lazy=factor_lazy,
+                factor_roi=factor_roi
+            ),
+            axis=1
         )
 
     tiempo_drop, leyenda_drop, hora_drop_txt = calcular_countdown_pais(pais_usuario)
@@ -1582,11 +1673,13 @@ try:
     if not df_alertas_check.empty and "Estado" in df_alertas_check.columns and not df_ult_corte.empty:
         act_snipers = df_alertas_check[df_alertas_check["Estado"].astype(str).str.strip() == "Activa"]
         disparos_sniper = []
+        serie_jug_norm = df_ult_corte["Jugador"].apply(lambda x: sin_tildes(str(x)).lower())
+        mask_sin_desfase = ~df_ult_corte["Senal_Trading"].astype(str).str.contains("🔎", na=False) if "Senal_Trading" in df_ult_corte.columns else pd.Series(True, index=df_ult_corte.index)
         for idx_sn, r_sn in act_snipers.iterrows():
-            j_b = str(r_sn.get("Jugador_Buscado", "")).strip()
+            j_b = sin_tildes(str(r_sn.get("Jugador_Buscado", ""))).strip().lower()
             p_obj = num_seguro(r_sn.get("Precio_Objetivo", 0))
             if j_b and p_obj > 0:
-                m_sn = df_ult_corte[df_ult_corte["Jugador"].astype(str).str.lower().str.contains(j_b.lower(), na=False)]
+                m_sn = df_ult_corte[serie_jug_norm.str.contains(re.escape(j_b), na=False) & mask_sin_desfase]
                 if not m_sn.empty:
                     mejor_fila = m_sn.loc[m_sn["Precio_Actual"].apply(num_seguro).idxmin()]
                     p_actual_sn = num_seguro(mejor_fila.get("Precio_Actual", 0))
@@ -1696,6 +1789,7 @@ try:
 
     filas_cartera_viva = []
     vnr_total = 0
+    serie_corte_norm = df_ult_corte["Jugador"].apply(lambda x: sin_tildes(str(x)).lower()) if (not df_ult_corte.empty and "Jugador" in df_ult_corte.columns) else pd.Series(dtype=str)
     for idx_orig, r_a in activos.iterrows():
         nom_a = str(r_a.get("Jugador_Exacto", "Jugador"))
         cant_a = max(1, num_seguro(r_a.get("Cantidad", 1), 1))
@@ -1704,7 +1798,7 @@ try:
         est_a = str(r_a.get("Estrategia", "Flipping Meta"))
         if not est_a or est_a.lower() == "nan":
             est_a = autodetectar_estrategia(nom_a, costo_a)
-        empate_a = redondear_escalon_ea(costo_a / 0.95, hacia_arriba=True)
+        empate_a = calcular_break_even(costo_a)
         sl_a = redondear_escalon_ea((costo_a * factor_sl) / 0.95, hacia_arriba=False)
 
         horas_hold = 1.0
@@ -1717,17 +1811,18 @@ try:
         str_hold = f"{int(horas_hold)}h" if horas_hold < 48 else f"{round(horas_hold/24, 1)}d"
 
         p_mercado = costo_a
+        max_hist_a = 0
+        muestras_a = 0
         enlace_a = ""
         if not df_ult_corte.empty and "Jugador" in df_ult_corte.columns:
-            m = df_ult_corte[df_ult_corte["Jugador"].astype(str).str.lower().str.contains(nom_a.lower(), na=False)].copy()
+            nom_a_norm = sin_tildes(nom_a).lower().strip()
+            m = df_ult_corte[serie_corte_norm.str.contains(re.escape(nom_a_norm), na=False)].copy()
             if not m.empty:
                 m["_diff_costo"] = (m["Precio_Actual"].apply(num_seguro) - costo_a).abs()
                 fila_m = m.sort_values(by="_diff_costo").iloc[0]
-                p_mercado = max(
-                    num_seguro(fila_m.get("Precio_Actual", 0)),
-                    num_seguro(fila_m.get("Precio_Futbin", 0)),
-                    num_seguro(fila_m.get("Precio_FUTGG", 0))
-                )
+                p_mercado = precio_mercado_seguro_carta(fila_m, fallback_precio=costo_a)
+                max_hist_a = num_seguro(fila_m.get("Precio_Max_Hist", 0), 0)
+                muestras_a = num_seguro(fila_m.get("Muestras_Hist", 0), 0)
                 enlace_a = str(fila_m.get("Enlace_Optimo", fila_m.get("Enlace_Futbin", "")) or "")
 
         vnr_carta_unit = int(round(p_mercado * 0.95))
@@ -1736,7 +1831,14 @@ try:
         tenencia = vnr_lote - costo_lote_a
         roi_lat = round((tenencia / costo_lote_a) * 100, 1) if costo_lote_a > 0 else 0.0
         roi_diario = round(roi_lat / max(1.0, dias_hold), 1)
-        lazy_a = redondear_escalon_ea(max(p_mercado * factor_lazy, (costo_a * factor_roi) / 0.95), hacia_arriba=True)
+        lazy_a = calcular_precio_lazy(
+            p_mercado,
+            precio_pagado=costo_a,
+            max_hist=max_hist_a,
+            muestras=muestras_a,
+            factor_lazy=factor_lazy,
+            factor_roi=factor_roi
+        )
 
         if roi_lat <= float(stop_loss_pct):
             estado_op = "🛑 STOP-LOSS (Vender)"
@@ -2243,9 +2345,16 @@ try:
                 precios_serie = df_jug_hist["Precio_Actual"].apply(num_seguro)
                 p_actual_j = int(precios_serie.iloc[-1]) if not precios_serie.empty else 0
                 p_min_j = int(precios_serie.min()) if not precios_serie.empty else 0
+                p_max_j = int(precios_serie.max()) if not precios_serie.empty else 0
                 p_prom_j = int(round(precios_serie.mean())) if not precios_serie.empty else 0
-                puja_j = redondear_escalon_ea((p_actual_j * 0.95) / factor_roi, hacia_arriba=False)
-                lazy_j = redondear_escalon_ea(p_actual_j * factor_lazy, hacia_arriba=True)
+                puja_j = calcular_puja_maxima_segura(p_actual_j, factor_roi)
+                lazy_j = calcular_precio_lazy(
+                    p_actual_j,
+                    max_hist=p_max_j,
+                    muestras=len(precios_serie),
+                    factor_lazy=factor_lazy,
+                    factor_roi=factor_roi
+                )
 
                 m_l1, m_l2, m_l3, m_l4, m_l5 = st.columns(5)
                 m_l1.metric("💰 Precio Actual", f"{p_actual_j:,} mnds")
@@ -2270,6 +2379,8 @@ try:
             with c_sh1:
                 with st.expander("📲 Copiar Resumen de Gangas para WhatsApp / Discord / Telegram"):
                     df_top_g = df_ult_corte.copy()
+                    if "Senal_Trading" in df_top_g.columns:
+                        df_top_g = df_top_g[~df_top_g["Senal_Trading"].astype(str).str.contains("🔎|⚠️", na=False)]
                     if "Variacion_Bruta_%" in df_top_g.columns:
                         df_top_g = df_top_g.sort_values(by="Variacion_Bruta_%").head(5)
                     else:
@@ -2284,18 +2395,30 @@ try:
                     st.code("\n".join(lineas_share), language="markdown")
 
             with c_sh2:
-                with st.expander("⚖️ Detector de Arbitraje Real (FB vs GG >= 12%) & 💥 Flash Crashes", expanded=False):
+                with st.expander("⚖️ Detector de Arbitraje Real (12%–45%) & 💥 Flash Crashes (Anti-Desfase)", expanded=False):
                     filas_arb = []
                     for _, r_ar in df_ult_corte.iterrows():
                         p_fb_a = num_seguro(r_ar.get("Precio_Futbin", 0))
                         p_gg_a = num_seguro(r_ar.get("Precio_FUTGG", 0))
-                        var_a = float(r_ar.get("Variacion_Bruta_%", 0.0) or 0.0)
+                        var_a = float_seguro(r_ar.get("Variacion_Bruta_%", 0.0))
+                        senal_a = str(r_ar.get("Senal_Trading", ""))
+                        es_desfase_extremo = False
                         if p_fb_a > 0 and p_gg_a > 0:
                             menor_a = min(p_fb_a, p_gg_a)
                             mayor_a = max(p_fb_a, p_gg_a)
-                            brecha_pct = round(((mayor_a - menor_a) / max(1, menor_a)) * 100, 1)
-                            neto_arb = int(round(mayor_a * 0.95)) - menor_a
-                            if brecha_pct >= 12.0 and neto_arb > 0:
+                            brecha_pct = round(((mayor_a - menor_a) / max(1, menor_a)) * 100.0, 1)
+                            neto_arb = int(round((mayor_a * 0.95) - menor_a))
+                            if brecha_pct > UMBRAL_DESFASE_VERSION_PCT:
+                                es_desfase_extremo = True
+                                filas_arb.append({
+                                    "Jugador": r_ar.get("Jugador"),
+                                    "Tipo": "🔎 Desfase Versión/Precio (>45%)",
+                                    "Compra_Min": menor_a,
+                                    "Ref_Alta": mayor_a,
+                                    "Brecha_o_Caida": f"+{brecha_pct}% (Revisar versión)",
+                                    "Puja_Sugerida": num_seguro(r_ar.get("Puja_Max_10%_ROI", 0))
+                                })
+                            elif 12.0 <= brecha_pct <= UMBRAL_DESFASE_VERSION_PCT and neto_arb >= ganancia_neta_minima_real(menor_a):
                                 filas_arb.append({
                                     "Jugador": r_ar.get("Jugador"),
                                     "Tipo": "⚖️ Arbitraje FB/GG",
@@ -2304,24 +2427,28 @@ try:
                                     "Brecha_o_Caida": f"+{brecha_pct}% ({neto_arb:+,} netos)",
                                     "Puja_Sugerida": num_seguro(r_ar.get("Puja_Max_10%_ROI", 0))
                                 })
-                        if var_a <= -15.0:
-                            filas_arb.append({
-                                "Jugador": r_ar.get("Jugador"),
-                                "Tipo": "💥 Flash Crash",
-                                "Compra_Min": num_seguro(r_ar.get("Precio_Actual", 0)),
-                                "Ref_Alta": num_seguro(r_ar.get("Promedio_Hist", 0)),
-                                "Brecha_o_Caida": f"{var_a:+.1f}% vs Prom.",
-                                "Puja_Sugerida": num_seguro(r_ar.get("Puja_Max_10%_ROI", 0))
-                            })
+                        if var_a <= -15.0 and not es_desfase_extremo and "🔎" not in senal_a:
+                            p_act_fc = num_seguro(r_ar.get("Precio_Actual", 0))
+                            p_prom_fc = num_seguro(r_ar.get("Precio_Prom_Hist", r_ar.get("Precio_Anterior", 0)))
+                            neto_fc = int(round((p_prom_fc * 0.95) - p_act_fc)) if p_prom_fc > 0 else 0
+                            if neto_fc >= ganancia_neta_minima_real(p_act_fc):
+                                filas_arb.append({
+                                    "Jugador": r_ar.get("Jugador"),
+                                    "Tipo": "⚠️ Cuchillo / Crash" if "⚠️" in senal_a else "💥 Flash Crash",
+                                    "Compra_Min": p_act_fc,
+                                    "Ref_Alta": p_prom_fc,
+                                    "Brecha_o_Caida": f"{var_a:+.1f}% ({neto_fc:+,} netos)",
+                                    "Puja_Sugerida": num_seguro(r_ar.get("Puja_Max_10%_ROI", 0))
+                                })
                     if filas_arb:
                         st.dataframe(pd.DataFrame(filas_arb).head(25), use_container_width=True, hide_index=True)
                     else:
-                        st.caption("Sin desarbitrajes >= 12% ni Flash Crashes <= -15% en este corte.")
+                        st.caption("Sin arbitrajes válidos (12%–45%) ni Flash Crashes rentables Post-Tax en este corte.")
 
         st.markdown("---")
         st.subheader("⚡ Padrón Dual Interactivo (Límite Desbloqueado hasta 15,000,000 mnds + Compra 1-Clic)")
 
-        # MEJORA 3: FILTRO DE PRECIO MÁXIMO AMPLIADO HASTA 15,000,000 DE MONEDAS + FILTROS ARBITRAJE/CRASH
+        # MEJORA 3: FILTRO DE PRECIO MÁXIMO AMPLIADO HASTA 15,000,000 DE MONEDAS + FILTROS ARBITRAJE/CRASH/DESFASE
         c_f1, c_f2, c_f3, c_f4 = st.columns([1.8, 1.4, 1.1, 1.3])
         with c_f1:
             busqueda_jug = st.text_input("🔍 Filtrar por Nombre, Media o Tipo de Carta", placeholder="Ej: 86, TOTW, Mbappe...")
@@ -2333,7 +2460,8 @@ try:
                     "🟢 COMPRAR",
                     "⚡ Flipping Rápido",
                     "💎 Mínimo Histórico",
-                    "⚖️ Arbitraje FB vs GG (Brecha >= 12%)",
+                    "⚖️ Arbitraje FB vs GG (12%–45%)",
+                    "🔎 Posible Desfase Versión/Precio (>45%)",
                     "💥 Flash Crash Intradía (Caída <= -15%)",
                     "📦 Out of Packs / Especiales (TOTW & Promos)",
                     "🔴 VENDER",
@@ -2358,21 +2486,38 @@ try:
             serie_precios_r = df_ult_corte["Precio_Actual"].apply(num_seguro)
             df_filtrado = df_ult_corte[(serie_precios_r >= piso_precio_filtro) & (serie_precios_r <= tope_final_radar)].copy()
             if busqueda_jug.strip():
-                df_filtrado = df_filtrado[df_filtrado["Jugador"].astype(str).str.lower().str.contains(busqueda_jug.strip().lower(), na=False)]
+                b_norm = sin_tildes(busqueda_jug.strip()).lower()
+                df_filtrado = df_filtrado[df_filtrado["Jugador"].apply(lambda x: b_norm in sin_tildes(str(x)).lower())]
             if filtro_accion == "🟢 COMPRAR" and "Accion" in df_filtrado.columns:
                 df_filtrado = df_filtrado[df_filtrado["Accion"].astype(str).str.contains("COMPRAR", na=False)]
             elif filtro_accion == "⚡ Flipping Rápido" and "Senal_Trading" in df_filtrado.columns:
                 df_filtrado = df_filtrado[df_filtrado["Senal_Trading"].astype(str).str.contains("⚡", na=False)]
             elif filtro_accion == "💎 Mínimo Histórico" and "Estado_Historico" in df_filtrado.columns:
                 df_filtrado = df_filtrado[df_filtrado["Estado_Historico"].astype(str).str.contains("💎", na=False)]
-            elif filtro_accion == "⚖️ Arbitraje FB vs GG (Brecha >= 12%)":
+            elif filtro_accion == "⚖️ Arbitraje FB vs GG (12%–45%)":
                 p_fb_s = df_filtrado["Precio_Futbin"].apply(num_seguro) if "Precio_Futbin" in df_filtrado.columns else pd.Series(0, index=df_filtrado.index)
                 p_gg_s = df_filtrado["Precio_FUTGG"].apply(num_seguro) if "Precio_FUTGG" in df_filtrado.columns else pd.Series(0, index=df_filtrado.index)
                 min_s = np.minimum(p_fb_s, p_gg_s).replace(0, np.nan)
                 max_s = np.maximum(p_fb_s, p_gg_s)
-                df_filtrado = df_filtrado[(p_fb_s > 0) & (p_gg_s > 0) & (((max_s - min_s) / min_s) >= 0.12)]
+                brecha_s = (max_s - min_s) / min_s
+                neto_s = (max_s * 0.95) - min_s
+                min_neto_req = min_s.fillna(0).apply(ganancia_neta_minima_real)
+                df_filtrado = df_filtrado[(p_fb_s > 0) & (p_gg_s > 0) & (brecha_s >= 0.12) & (brecha_s <= (UMBRAL_DESFASE_VERSION_PCT / 100.0)) & (neto_s >= min_neto_req)]
+            elif filtro_accion == "🔎 Posible Desfase Versión/Precio (>45%)":
+                p_fb_s = df_filtrado["Precio_Futbin"].apply(num_seguro) if "Precio_Futbin" in df_filtrado.columns else pd.Series(0, index=df_filtrado.index)
+                p_gg_s = df_filtrado["Precio_FUTGG"].apply(num_seguro) if "Precio_FUTGG" in df_filtrado.columns else pd.Series(0, index=df_filtrado.index)
+                min_s = np.minimum(p_fb_s, p_gg_s).replace(0, np.nan)
+                max_s = np.maximum(p_fb_s, p_gg_s)
+                brecha_s = (max_s - min_s) / min_s
+                mask_desf = (p_fb_s > 0) & (p_gg_s > 0) & (brecha_s > (UMBRAL_DESFASE_VERSION_PCT / 100.0))
+                if "Senal_Trading" in df_filtrado.columns:
+                    mask_desf = mask_desf | df_filtrado["Senal_Trading"].astype(str).str.contains("🔎", na=False)
+                df_filtrado = df_filtrado[mask_desf]
             elif filtro_accion == "💥 Flash Crash Intradía (Caída <= -15%)" and "Variacion_Bruta_%" in df_filtrado.columns:
-                df_filtrado = df_filtrado[pd.to_numeric(df_filtrado["Variacion_Bruta_%"], errors="coerce").fillna(0) <= -15.0]
+                mask_fc = pd.to_numeric(df_filtrado["Variacion_Bruta_%"], errors="coerce").fillna(0) <= -15.0
+                if "Senal_Trading" in df_filtrado.columns:
+                    mask_fc = mask_fc & (~df_filtrado["Senal_Trading"].astype(str).str.contains("🔎", na=False))
+                df_filtrado = df_filtrado[mask_fc]
             elif filtro_accion == "📦 Out of Packs / Especiales (TOTW & Promos)":
                 df_filtrado = df_filtrado[df_filtrado["Jugador"].apply(es_carta_especial_oop)]
             elif filtro_accion == "🔴 VENDER" and "Accion" in df_filtrado.columns:
@@ -2822,21 +2967,19 @@ try:
             liq_c = int(cfg_c.get("liquidez_manual", max(0, int(presupuesto_usuario) - cap_inm_c))) if cfg_c.get("modo_liquidez") == "Manual" else max(0, int(presupuesto_usuario) - cap_inm_c)
 
             vnr_c = 0
+            serie_rk_norm = df_ult_corte["Jugador"].apply(lambda x: sin_tildes(str(x)).lower()) if (not df_ult_corte.empty and "Jugador" in df_ult_corte.columns) else pd.Series(dtype=str)
             for _, r_ac in act_c.iterrows():
                 nom_ac = str(r_ac.get("Jugador_Exacto", "Carta"))
                 cant_ac = max(1, num_seguro(r_ac.get("Cantidad", 1), 1))
                 costo_ac = num_seguro(r_ac.get("Precio_Pagado", 0), 0)
                 p_merc_ac = costo_ac
                 if not df_ult_corte.empty and "Jugador" in df_ult_corte.columns:
-                    m_ac = df_ult_corte[df_ult_corte["Jugador"].astype(str).str.lower().str.contains(nom_ac.lower(), na=False)].copy()
+                    nom_ac_norm = sin_tildes(nom_ac).lower().strip()
+                    m_ac = df_ult_corte[serie_rk_norm.str.contains(re.escape(nom_ac_norm), na=False)].copy()
                     if not m_ac.empty:
                         m_ac["_diff_c"] = (m_ac["Precio_Actual"].apply(num_seguro) - costo_ac).abs()
                         f_ac = m_ac.sort_values(by="_diff_c").iloc[0]
-                        p_merc_ac = max(
-                            num_seguro(f_ac.get("Precio_Actual", 0)),
-                            num_seguro(f_ac.get("Precio_Futbin", 0)),
-                            num_seguro(f_ac.get("Precio_FUTGG", 0))
-                        )
+                        p_merc_ac = precio_mercado_seguro_carta(f_ac, fallback_precio=costo_ac)
                 vnr_c += int(round(p_merc_ac * 0.95)) * cant_ac
 
             gan_real_c = 0
@@ -2851,7 +2994,8 @@ try:
                         neto_vc = gn_guardada
                     elif pv_vc > 0:
                         vb_vc = pv_vc * cant_vc
-                        neto_vc = int(round((vb_vc * 0.95) - (pp_vc * cant_vc)))
+                        tax_vc = int(round(vb_vc * 0.05))
+                        neto_vc = int(round((vb_vc - tax_vc) - (pp_vc * cant_vc)))
                     else:
                         neto_vc = 0
                     gan_real_c += neto_vc
