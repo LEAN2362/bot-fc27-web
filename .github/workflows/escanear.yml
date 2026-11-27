@@ -32,6 +32,8 @@ jobs:
         pip install DrissionPage google-genai requests openpyxl gspread pandas
 
     - name: 🚀 Ejecutar el bot recolector
+      env:
+        PLATAFORMA_FUTGG: pc
       run: python bot_fc27.py auto
 
     - name: 💾 Guardar precios actualizados directo en GitHub
