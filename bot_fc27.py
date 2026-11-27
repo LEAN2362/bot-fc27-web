@@ -1705,6 +1705,7 @@ def crear_navegador_optimizado(ocultar=False):
     options.set_argument('--window-size=1920,1080')
     options.set_argument('--disable-extensions')
     options.set_argument('--disable-blink-features=AutomationControlled')
+    options.set_argument('--lang=en-US,en')
     options.set_argument('--blink-settings=imagesEnabled=false')
     options.no_imgs(True)
     try:
@@ -1718,22 +1719,24 @@ def crear_navegador_optimizado(ocultar=False):
         options.set_argument('--no-sandbox')
         options.set_argument('--disable-dev-shm-usage')
         options.set_argument('--disable-gpu')
-        options.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')
+        options.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36')
     elif ocultar:
         options.set_argument('--window-position=-32000,-32000')
 
     page = ChromiumPage(addr_or_opts=options)
-    page.set.timeouts(page_load=10)
+    page.set.timeouts(page_load=15)
     try:
         page.run_cdp('Page.addScriptToEvaluateOnNewDocument', source="""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            window.chrome = window.chrome || { runtime: {} };
         """)
     except Exception:
         pass
     try:
         page.run_cdp('Network.enable')
         page.run_cdp('Network.setBlockedURLs', urls=[
-            "*.png", "*.jpg", "*.jpeg", "*.webp", "*.gif", "*.svg", "*.ico",
+            "*.png", "*.jpg", "*.jpeg", "*.webp", "*.gif", "*.ico",
             "*.woff", "*.woff2", "*.ttf", "*.otf", "*.mp4", "*.webm",
             "*doubleclick.net*", "*googlesyndication.com*", "*googletagmanager.com*",
             "*google-analytics.com*", "*facebook.net*", "*adservice*", "*amazon-adsystem*"
@@ -1801,12 +1804,70 @@ def extraer_media_futgg(texto_inner, texto_alts, valor_gg=0, min_media=65):
             return str(val_m)
     return "??"
 
+def esperar_cartas_futgg(page, min_cartas=10, timeout_seg=12.0, estabilizar=True):
+    """
+    Espera explícitamente hasta `timeout_seg` segundos a que FUT.GG renderice al menos `min_cartas`
+    enlaces reales de cartas individuales (con ID numérico, ej. '/players/231747-') o datos hidratados
+    en __NEXT_DATA__, evitando el falso positivo del enlace genérico del menú '/players/'.
+    """
+    inicio = time.time()
+    ultimo_diag = {
+        "ok": False, "links_reales": 0, "tiene_next_data": False,
+        "title": "", "url": "", "snippet": ""
+    }
+    js_check = """
+    try {
+        let ls = document.querySelectorAll('a[href*="/players/"]');
+        let reales = new Set();
+        for (let a of ls) {
+            let h = (a.getAttribute('href') || '').split('?')[0];
+            if (/\\/players\\/\\d+-[a-zA-Z0-9-]+/.test(h)) reales.add(h);
+        }
+        let nextEl = document.getElementById('__NEXT_DATA__');
+        let tieneNext = Boolean(nextEl && nextEl.textContent && nextEl.textContent.length > 500 && /players|eaId|cardId/i.test(nextEl.textContent));
+        let txt = (document.body ? (document.body.innerText || '') : '').replace(/\\s+/g, ' ').trim().slice(0, 220);
+        return {
+            links_reales: reales.size,
+            tiene_next_data: tieneNext,
+            title: document.title || '',
+            url: location.href || '',
+            snippet: txt
+        };
+    } catch (e) {
+        return {links_reales: 0, tiene_next_data: false, title: '', url: '', snippet: String(e)};
+    }
+    """
+    while (time.time() - inicio) < float(timeout_seg):
+        try:
+            d = page.run_js(js_check) or {}
+            if isinstance(d, dict):
+                ultimo_diag.update(d)
+                if int(d.get("links_reales", 0)) >= min_cartas or (bool(d.get("tiene_next_data")) and int(d.get("links_reales", 0)) > 0):
+                    ultimo_diag["ok"] = True
+                    if estabilizar:
+                        try:
+                            page.run_js("window.scrollTo(0, Math.floor(document.body.scrollHeight * 0.4));")
+                        except Exception:
+                            pass
+                        page.wait(random.uniform(1.2, 1.8))
+                    return ultimo_diag
+        except Exception:
+            pass
+        time.sleep(0.35)
+
+    # Última comprobación con umbral mínimo >= 1 por si la última página tiene menos de 10 cartas
+    if int(ultimo_diag.get("links_reales", 0)) >= 1:
+        ultimo_diag["ok"] = True
+        if estabilizar:
+            page.wait(random.uniform(1.2, 1.8))
+    return ultimo_diag
+
 def fijar_plataforma_futgg(page, plataforma=PLATAFORMA_FUTGG):
     """
     Garantiza selección explícita de plataforma ('pc' o 'console') en FUT.GG mediante:
     1) Hook CDP en cada documento nuevo (cookies + localStorage de mercado/plataforma).
-    2) Clic directo o apertura de desplegable Console -> PC en la UI de FUT.GG y espera de re-hidratación.
-    3) Diagnóstico explícito en consola de la plataforma activa y cookies/storage persistidos.
+    2) Espera real de renderizado de cartas individuales (esperar_cartas_futgg) antes de clickear PC.
+    3) Clic directo o apertura de desplegable Console -> PC en la UI de FUT.GG y espera de re-hidratación.
     """
     plat = "console" if str(plataforma or "").strip().lower() == "console" else "pc"
     plat_cookie = "ps" if plat == "console" else "pc"
@@ -1835,8 +1896,11 @@ def fijar_plataforma_futgg(page, plataforma=PLATAFORMA_FUTGG):
 
     try:
         page.get("https://www.fut.gg/players/")
-        page.ele('xpath://a[contains(@href, "/players/")]', timeout=8)
-        page.wait(1.0)
+        diag_init = esperar_cartas_futgg(page, min_cartas=10, timeout_seg=12.0, estabilizar=True)
+        print(
+            f"🧭 [FUT.GG Init] title='{diag_init.get('title', '')}' | url='{diag_init.get('url', '')}' "
+            f"| links_reales={diag_init.get('links_reales', 0)} | __NEXT_DATA__={diag_init.get('tiene_next_data', False)}"
+        )
         page.run_js(js_init)
 
         # Paso 1: intentar clic directo sobre botón/tab/radio "PC" o "Console"
@@ -2182,8 +2246,8 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=
     for url_t in urls_totw_dedicadas:
         try:
             page.get(url_t)
-            if page.ele('xpath://a[contains(@href, "/players/")]', timeout=8):
-                page.wait(0.8)
+            diag_t = esperar_cartas_futgg(page, min_cartas=3, timeout_seg=12.0, estabilizar=True)
+            if diag_t.get("ok"):
                 datos_t = page.run_js(script_gg) or []
                 for item in datos_t:
                     href_limpio = (item.get('href', '') or '').split('?')[0]
@@ -2237,18 +2301,40 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=
         url_gg = f"https://www.fut.gg/players/?page={pag}&price__gte=200&price__lte={presupuesto_max}"
         print(f"🌐 FUT.GG {etq_plat} Página {pag}/{max_paginas}... (Capturados GG: {len(jugadores_gg):,}/{MAX_JUGADORES:,})")
         datos_gg = None
+        diag_pag = {}
+        min_req = 10 if pag <= 5 else 1
         for intento in range(2):
             try:
                 page.get(url_gg)
-                if page.ele('xpath://a[contains(@href, "/players/")]', timeout=8):
-                    page.wait(random.uniform(0.55, 0.85))
+                diag_pag = esperar_cartas_futgg(page, min_cartas=min_req, timeout_seg=12.0, estabilizar=True)
+                if diag_pag.get("ok"):
                     datos_gg = page.run_js(script_gg)
-                    break
-            except Exception:
+                    if datos_gg:
+                        break
+            except Exception as e_pag:
+                if pag == 1:
+                    print(f"⚠️ [FUT.GG Pág 1 intento {intento + 1}] Error: {e_pag}")
                 if intento == 0:
-                    time.sleep(0.6)
+                    time.sleep(1.0)
                     continue
+            if intento == 0 and not datos_gg:
+                time.sleep(1.0)
+
         if not datos_gg:
+            if pag == 1:
+                try:
+                    t_real = page.title
+                    u_real = page.url
+                except Exception:
+                    t_real = diag_pag.get("title", "")
+                    u_real = diag_pag.get("url", url_gg)
+                print(
+                    f"🔎 [DIAGNÓSTICO FUT.GG Pág 1 — 0 capturados] "
+                    f"page.title='{t_real}' | page.url='{u_real}' | "
+                    f"links_reales={diag_pag.get('links_reales', 0)} | "
+                    f"__NEXT_DATA__={diag_pag.get('tiene_next_data', False)} | "
+                    f"snippet='{diag_pag.get('snippet', '')}'"
+                )
             paginas_vacias_seguidas += 1
             if paginas_vacias_seguidas >= 5:
                 break
@@ -2304,6 +2390,27 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=
                 "Clave": clave_cruce(nombre_fmt),
                 "Enlace_GG": f"https://www.fut.gg{href_limpio}" if href_limpio.startswith('/') else href_limpio
             })
+
+        if pag == 1:
+            if nuevos_en_pagina == 0:
+                try:
+                    t_real = page.title
+                    u_real = page.url
+                except Exception:
+                    t_real = diag_pag.get("title", "")
+                    u_real = diag_pag.get("url", url_gg)
+                muestra_raw = datos_gg[0] if datos_gg else {}
+                print(
+                    f"🔎 [DIAGNÓSTICO FUT.GG Pág 1 — 0 nuevos de {len(datos_gg or [])} nodos DOM] "
+                    f"page.title='{t_real}' | page.url='{u_real}' | "
+                    f"muestra_href='{muestra_raw.get('href', '')}' | muestra_precio='{muestra_raw.get('texto_precio', '')}'"
+                )
+            else:
+                muestra_ok = ", ".join(
+                    f"{j['Jugador_GG'].split(' (')[0]} ({j['Media']}: {j['Precio_FUTGG']:,} PC/{j['Precio_Consola']:,} Con)"
+                    for j in jugadores_gg[-min(nuevos_en_pagina, 3):]
+                )
+                print(f"✅ [FUT.GG {etq_plat} Pág 1] {nuevos_en_pagina} cartas capturadas | Muestra: {muestra_ok}")
 
         if nuevos_en_pagina == 0:
             paginas_vacias_seguidas += 1
