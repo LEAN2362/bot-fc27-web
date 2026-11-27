@@ -4652,10 +4652,12 @@ try:
                 st.info("No tenés alertas Sniper activas en este momento.")
 
         st.markdown("---")
+        plat_caption_t3 = locals().get("etiqueta_plat") or locals().get("plataforma_usuario") or "FUT.GG"
+        corte_caption_t3 = locals().get("ultima_act") or "Último corte"
         c_m1, c_m2 = st.columns(2)
         with c_m1:
             st.subheader("🧱 Radar de Medias SBC (Fodder En Vivo)")
-            st.caption(f"Calculado en tiempo real sobre {etq_plat_header} ({ultima_act}) · Mediana de las 5 cartas Oro más baratas (anti-outliers).")
+            st.caption(f"Calculado en tiempo real sobre {plat_caption_t3} ({corte_caption_t3}) · Mediana de las 5 cartas Oro más baratas (anti-outliers).")
             if not df_fodder_vivo.empty:
                 st.dataframe(
                     df_fodder_vivo,
@@ -4674,7 +4676,7 @@ try:
                 st.caption("Sin muestras válidas de Fodder Oro en el corte actual.")
         with c_m2:
             st.subheader("🖤 Radar TOTW en Piso (En Vivo)")
-            st.caption(f"Calculado en tiempo real sobre {etq_plat_header} · Cartas reales del Equipo de la Semana (9,500–18,000 mnds, Media 83+).")
+            st.caption(f"Calculado en tiempo real sobre {plat_caption_t3} ({corte_caption_t3}) · Cartas reales del Equipo de la Semana (9,500–18,000 mnds, Media 83+).")
             if not df_totw_vivo.empty:
                 st.dataframe(
                     df_totw_vivo,
