@@ -1524,6 +1524,13 @@ def redondear_escalon_ea(precio, hacia_arriba=False):
         return int(math.ceil(precio / paso) * paso)
     return int(math.floor(precio / paso) * paso)
 
+def redondear_escalon_ea_cercano(precio):
+    precio = float_seguro(precio, 0.0)
+    if precio <= 0:
+        return 0
+    paso = paso_escalon_ea(precio)
+    return max(200, int(round(precio / paso) * paso))
+
 def calcular_break_even(precio_compra):
     precio_compra = float_seguro(precio_compra, 0.0)
     if precio_compra <= 0:
@@ -1588,7 +1595,18 @@ PISOS_MINIMOS_REALISTAS_MEDIA = {
     92: 35000,
 }
 
+PISOS_LOGICOS_FODDER_WEB = {
+    83: 650,
+    84: 750,
+    85: 2000,
+    86: 4500,
+    87: 7500,
+    88: 11500,
+    89: 18000,
+}
+
 REFERENCIA_FODDER_WEB = {
+    83: (950, 1800),
     84: (1200, 2200),
     85: (2800, 4500),
     86: (5500, 8500),
@@ -1628,6 +1646,18 @@ def categoria_version_carta_web(texto):
     if any(k in t for k in palabras_promo):
         return "Promo/Especial"
     return "Normal/Oro"
+
+def es_carta_oro_normal_fodder_web(nombre_full, categoria="", enlace=""):
+    """Devuelve True solo para cartas Oro/Normal base (excluye TOTW/IF/Promo/Especial/Icono/Héroe)."""
+    if categoria_version_carta_web(nombre_full) != "Normal/Oro":
+        return False
+    cat_s = sin_tildes(str(categoria or "")).lower().strip()
+    if cat_s and cat_s not in ("normal/oro", "normal", "oro", "gold"):
+        return False
+    m_url = re.search(r'/players/(\d+)-[^/]+/27-(\d+)(?:/|$)', str(enlace or ""))
+    if m_url and m_url.group(1) != m_url.group(2):
+        return False
+    return True
 
 def es_totw_real_web(nombre_full, enlace=""):
     if not nombre_full:
@@ -1745,11 +1775,14 @@ def emparejar_carta_mercado(nom_carta, costo_pagado, estrategia, df_corte):
 
 def calcular_pisos_fodder_vivos(df_corte):
     """
-    Calcula pisos realistas de Fodder (medias 83 a 89) sobre df_ult_corte protegiendo
-    contra cartas extintas (0 mnds), glitcheadas o mal etiquetadas mediante pisos mínimos
-    realistas por media + percentil 5% anti-outlier.
+    Calcula pisos realistas de Fodder (medias 83 a 89) dinámicamente sobre df_ult_corte:
+    - Filtra solo cartas Oro/Normal base (excluye TOTW/IF/Promo/Especial/Icono/Héroe) con Precio_Actual > 0 en escalón EA.
+    - Descarta valores irreales por debajo de PISOS_LOGICOS_FODDER_WEB (83>=650, 84>=750, 85>=2000, 86>=4500, 87>=7500, 88>=11500, 89>=18000).
+    - Usa la mediana de las 5 cartas oro más baratas (redondeada al escalón EA) tanto en la tabla Radar_Fodder como en pisos_vivos del Optimizador SBC.
+    - Lista las 3 cartas oro más baratas reales en Jugadores_Referencia.
     Retorna: (pisos_vivos, jug_ref_vivos, df_fodder_vivo)
     """
+    cols_fod = ["Media", "Precio_Mas_Barato", "Jugadores_Referencia", "Piso_Compra", "Techo_Venta", "Senal", "Enlace_Optimo"]
     pisos_default = {83: 900, 84: 1200, 85: 2800, 86: 5500, 87: 9500, 88: 14500, 89: 22000}
     pisos_vivos = {}
     jug_ref_vivos = {}
@@ -1759,42 +1792,66 @@ def calcular_pisos_fodder_vivos(df_corte):
     if not df_act.empty and "Jugador" in df_act.columns:
         df_act["_media_fod"] = df_act["Jugador"].apply(extraer_media_carta_web)
         df_act["_p_fod"] = df_act["Precio_Actual"].apply(num_seguro)
+        col_cat_f = "Categoria_Carta" if "Categoria_Carta" in df_act.columns else None
+        col_enl_f = "Enlace_Optimo" if "Enlace_Optimo" in df_act.columns else ("Enlace_Futbin" if "Enlace_Futbin" in df_act.columns else None)
+        df_act["_es_oro_fod"] = [
+            es_carta_oro_normal_fodder_web(
+                j_v,
+                categoria=(c_v if col_cat_f else ""),
+                enlace=(e_v if col_enl_f else "")
+            )
+            for j_v, c_v, e_v in zip(
+                df_act["Jugador"],
+                df_act[col_cat_f] if col_cat_f else [""] * len(df_act),
+                df_act[col_enl_f] if col_enl_f else [""] * len(df_act),
+            )
+        ]
 
     for m_val, p_def_m in pisos_default.items():
-        piso_min_real = PISOS_MINIMOS_REALISTAS_MEDIA.get(m_val, 200)
-        fila_sel = None
+        piso_logico = PISOS_LOGICOS_FODDER_WEB.get(m_val, PISOS_MINIMOS_REALISTAS_MEDIA.get(m_val, 200))
+        c_m = pd.DataFrame()
         if not df_act.empty:
-            c_m = df_act[
+            base_mask = (
                 (df_act["_media_fod"] == m_val)
-                & (df_act["_p_fod"] >= piso_min_real)
+                & (df_act["_es_oro_fod"])
                 & (df_act["_p_fod"].apply(es_multiplo_escalon_ea))
-            ].sort_values(by="_p_fod")
-            if not c_m.empty:
-                if len(c_m) >= 5:
-                    q05 = float(np.percentile(c_m["_p_fod"].values, 5))
-                    c_m_rob = c_m[c_m["_p_fod"] >= int(q05 * 0.65)]
-                    if not c_m_rob.empty:
-                        c_m = c_m_rob
-                fila_sel = c_m.iloc[0]
+            )
+            c_m = df_act[base_mask & (df_act["_p_fod"] >= piso_logico)].sort_values(by="_p_fod")
+            # Respaldo controlado solo si todo el mercado real bajó temporalmente del piso lógico
+            if len(c_m) < 3:
+                piso_resp = PISOS_MINIMOS_REALISTAS_MEDIA.get(m_val, 200)
+                c_m_resp = df_act[base_mask & (df_act["_p_fod"] >= piso_resp)].sort_values(by="_p_fod")
+                if len(c_m_resp) > len(c_m):
+                    c_m = c_m_resp
 
-        if fila_sel is not None:
-            p_real = int(fila_sel["_p_fod"])
-            nom_ref = str(fila_sel["Jugador"]).split(" (")[0].strip()
-            enl_ref = str(fila_sel.get("Enlace_Optimo", fila_sel.get("Enlace_Futbin", "")) or "")
-            pisos_vivos[m_val] = p_real
-            jug_ref_vivos[m_val] = f"{nom_ref} ({p_real:,} mnds)"
+        if not c_m.empty:
+            top5_p = c_m["_p_fod"].head(5).astype(int).tolist()
+            p_mediana = redondear_escalon_ea_cercano(float(np.median(top5_p)))
+
+            top3_df = c_m.head(3)
+            jugs_ref_txt = ", ".join(
+                f"{str(r_t['Jugador']).split(' (')[0].strip()} ({int(r_t['_p_fod']):,})"
+                for _, r_t in top3_df.iterrows()
+            )
+            fila_min = c_m.iloc[0]
+            nom_min = str(fila_min["Jugador"]).split(" (")[0].strip()
+            enl_ref = str(fila_min.get("Enlace_Optimo", fila_min.get("Enlace_Futbin", "")) or "")
+
+            pisos_vivos[m_val] = p_mediana
+            jug_ref_vivos[m_val] = f"{nom_min} · Mediana Top 5 ({p_mediana:,} mnds)"
+
             if m_val in REFERENCIA_FODDER_WEB:
                 p_comp_ref, p_vent_ref = REFERENCIA_FODDER_WEB[m_val]
-                if p_real <= p_comp_ref:
+                if p_mediana <= p_comp_ref:
                     senal_f = "✅ COMPRAR"
-                elif p_real >= p_vent_ref:
+                elif p_mediana >= p_vent_ref:
                     senal_f = "🚨 VENDER"
                 else:
                     senal_f = "⏳ ESPERAR"
                 filas_fodder.append({
                     "Media": m_val,
-                    "Precio_Mas_Barato": p_real,
-                    "Jugador_Referencia": nom_ref,
+                    "Precio_Mas_Barato": p_mediana,
+                    "Jugadores_Referencia": jugs_ref_txt,
                     "Piso_Compra": p_comp_ref,
                     "Techo_Venta": p_vent_ref,
                     "Senal": senal_f,
@@ -1804,7 +1861,7 @@ def calcular_pisos_fodder_vivos(df_corte):
             pisos_vivos[m_val] = p_def_m
             jug_ref_vivos[m_val] = f"Referencia ({p_def_m:,} mnds)"
 
-    return pisos_vivos, jug_ref_vivos, pd.DataFrame(filas_fodder)
+    return pisos_vivos, jug_ref_vivos, pd.DataFrame(filas_fodder, columns=cols_fod)
 
 def construir_radar_totw_vivo(df_corte, factor_lazy=1.12, factor_roi=1.10):
     """Calcula dinámicamente Radar_TOTW sobre df_ult_corte filtrando estrictamente cartas TOTW reales en piso."""
@@ -2481,8 +2538,8 @@ def cargar_por_id_publico(sheet_id):
     hojas = {}
     nombres_hojas = [
         "Historial_Tendencias", "Mi_Cartera", "Recomendacion_IA",
-        "Dashboard_Financiero", "Radar_Fodder",
-        "Radar_Evos", "Radar_TOTW", "Radar_Links_Domino", "Mis_Alertas", "Clubes_Cloud"
+        "Dashboard_Financiero", "Radar_Evos", "Radar_Links_Domino",
+        "Mis_Alertas", "Clubes_Cloud"
     ]
     df_base_comparacion = None
 
@@ -2601,7 +2658,7 @@ try:
                 datos["Historial_Tendencias"] = df_hist_excel
                 for h in [
                     "Recomendacion_IA", "Dashboard_Financiero",
-                    "Radar_Fodder", "Radar_Evos", "Radar_TOTW", "Radar_Links_Domino"
+                    "Radar_Evos", "Radar_Links_Domino"
                 ]:
                     try:
                         datos[h] = convertir_columnas_numericas(pd.read_excel(ARCHIVO_EXCEL, sheet_name=h))
@@ -4462,7 +4519,7 @@ try:
         ref_fodder_sim = REFERENCIA_FODDER_WEB
         cs1, cs2, cs3, cs4 = st.columns(4)
         with cs1:
-            med_sim = st.selectbox("Media Objetivo", [84, 85, 86, 87, 88, 89], index=2)
+            med_sim = st.selectbox("Media Objetivo", [83, 84, 85, 86, 87, 88, 89], index=3)
         piso_def, techo_def = ref_fodder_sim[med_sim]
         with cs2:
             monto_inv_fod = st.number_input("Monedas a Invertir", min_value=5000, max_value=10000000, value=min(50000, max(5000, int(liquidez_disp))), step=5000)
@@ -4598,24 +4655,26 @@ try:
         c_m1, c_m2 = st.columns(2)
         with c_m1:
             st.subheader("🧱 Radar de Medias SBC (Fodder En Vivo)")
-            st.caption(f"Calculado dinámicamente sobre el corte más reciente ({ultima_act}) con protección anti-outliers.")
+            st.caption(f"Calculado en tiempo real sobre {etq_plat_header} ({ultima_act}) · Mediana de las 5 cartas Oro más baratas (anti-outliers).")
             if not df_fodder_vivo.empty:
                 st.dataframe(
                     df_fodder_vivo,
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "Precio_Mas_Barato": st.column_config.NumberColumn("💰 Piso Vivo", format="%d mnds"),
+                        "Media": st.column_config.NumberColumn("⭐ Media", format="%d"),
+                        "Precio_Mas_Barato": st.column_config.NumberColumn("💰 Piso Vivo (Mediana Top 5)", format="%d mnds"),
+                        "Jugadores_Referencia": st.column_config.TextColumn("🛒 Top 3 Oro Más Baratas"),
                         "Piso_Compra": st.column_config.NumberColumn("🎯 Ref. Compra", format="%d mnds"),
                         "Techo_Venta": st.column_config.NumberColumn("🚀 Ref. Venta", format="%d mnds"),
                         "Enlace_Optimo": st.column_config.LinkColumn("🔗 FUT.GG", display_text="Ver Carta")
                     }
                 )
             else:
-                st.caption("Sin muestras válidas de Fodder en el corte actual.")
+                st.caption("Sin muestras válidas de Fodder Oro en el corte actual.")
         with c_m2:
             st.subheader("🖤 Radar TOTW en Piso (En Vivo)")
-            st.caption("Filtrado estrictamente sobre cartas reales del Equipo de la Semana (9,500–18,000 mnds, Media 83+).")
+            st.caption(f"Calculado en tiempo real sobre {etq_plat_header} · Cartas reales del Equipo de la Semana (9,500–18,000 mnds, Media 83+).")
             if not df_totw_vivo.empty:
                 st.dataframe(
                     df_totw_vivo,

@@ -48,6 +48,7 @@ MARGEN_LAZY_BUYER = 1.12
 MODELOS_PREFERIDOS = ["models/gemini-2.5-flash", "gemini-2.5-flash", "models/gemini-3.5-flash", "gemini-3.5-flash"]
 
 REFERENCIA_FODDER = {
+    83: {"compra": 950,   "venta": 1800},
     84: {"compra": 1200,  "venta": 2200},
     85: {"compra": 2800,  "venta": 4500},
     86: {"compra": 5500,  "venta": 8500},
@@ -56,9 +57,9 @@ REFERENCIA_FODDER = {
     89: {"compra": 22000, "venta": 32000},
 }
 
-# Pisos mínimos realistas por valoración para impedir outliers/glitches/descarte en medias altas
+# Pisos mínimos realistas por valoración para impedir outliers/glitches/descarte en el padrón general
 PISOS_MINIMOS_REALISTAS_MEDIA = {
-    83: 600,
+    83: 650,
     84: 650,
     85: 1800,
     86: 3500,
@@ -70,9 +71,21 @@ PISOS_MINIMOS_REALISTAS_MEDIA = {
     92: 35000,
 }
 
+# Pisos lógicos estrictos de mercado para el Radar de Medias SBC (Fodder 83-89, solo cartas Oro)
+PISOS_LOGICOS_FODDER = {
+    83: 650,
+    84: 750,
+    85: 2000,
+    86: 4500,
+    87: 7500,
+    88: 11500,
+    89: 18000,
+}
+
 TOPE_PRECIO_BASE_EVO = 15000
 UMBRAL_SUBIDA_EVO_PCT = 35.0
 TOPE_TOTW_DESCARTE = 16500
+COLUMNAS_RADAR_FODDER = ["Media", "Precio_Mas_Barato", "Jugadores_Referencia", "Piso_Compra", "Techo_Venta", "Senal", "Enlace_Optimo"]
 COLUMNAS_RADAR_TOTW = ["Jugador", "Media", "Precio_Actual", "Fuente", "Break_Even_5%", "Precio_Lazy_1h", "Riesgo", "Enlace_Optimo"]
 
 def precio_cumple_piso_media(precio, media):
@@ -325,6 +338,12 @@ def redondear_escalon_ea(precio, hacia_arriba=False):
         return int(math.ceil(precio / paso) * paso)
     return int(math.floor(precio / paso) * paso)
 
+def redondear_escalon_ea_cercano(precio):
+    if precio <= 0:
+        return 0
+    paso = paso_escalon_ea(precio)
+    return max(200, int(round(float(precio) / paso) * paso))
+
 def calcular_break_even(precio_compra):
     if precio_compra <= 0:
         return 0
@@ -549,6 +568,34 @@ def extraer_precio_carta_unica_gg(texto_card, presupuesto_max, texto_precio="", 
                 if media and not precio_cumple_piso_media(val_e, media):
                     continue
                 return val_e
+    return 0
+
+def validar_precio_plataforma_gg(valor_json=None, texto_nodo="", presupuesto_max=PRESUPUESTO_MAXIMO, media=0):
+    """
+    Valida un precio individual de PC o Consola proveniente de datos hidratados JSON o de un nodo DOM
+    específico de precio en FUT.GG. Exige estrictamente escalón oficial EA y piso realista por media.
+    Devuelve > 0 (válido), 0 (extinta/inválido) o -1 (real pero por encima de presupuesto_max).
+    """
+    if valor_json is not None and str(valor_json).strip() != "":
+        try:
+            v_num = int(round(float(valor_json)))
+            if v_num > presupuesto_max:
+                return -1
+            if v_num > 0 and es_multiplo_escalon_ea(v_num, presupuesto_max):
+                if not media or precio_cumple_piso_media(v_num, media):
+                    return v_num
+        except Exception:
+            pass
+    tn = str(texto_nodo or "").strip()
+    if tn:
+        if _es_texto_extinta(tn):
+            return 0
+        v_dom = _parsear_valor_monedas_km(tn, presupuesto_max, permitir_enteros_sin_formato=True)
+        if v_dom == -1:
+            return -1
+        if v_dom > 0 and es_multiplo_escalon_ea(v_dom, presupuesto_max):
+            if not media or precio_cumple_piso_media(v_dom, media):
+                return v_dom
     return 0
 
 def calcular_estadisticas_historicas(df_viejo):
@@ -885,6 +932,14 @@ def procesar_datos_futgg(datos_gg, historial_precios, stats_historicas, fecha_ac
         else:
             accion = "⚪ MANTENER"
 
+        p_con_raw = int(g.get("Precio_Consola", 0) or 0)
+        if p_con_raw > 0 and es_multiplo_escalon_ea(p_con_raw, PRESUPUESTO_MAXIMO) and precio_cumple_piso_media(p_con_raw, media_int):
+            p_con_val = p_con_raw
+        elif plat_carta == "Consola" and p_act > 0:
+            p_con_val = p_act
+        else:
+            p_con_val = 0
+
         datos_procesados.append({
             "Fecha": fecha_actual,
             "Jugador": nombre_jug_final,
@@ -892,7 +947,7 @@ def procesar_datos_futgg(datos_gg, historial_precios, stats_historicas, fecha_ac
             "Plataforma": plat_carta,
             "Precio_Anterior": precio_anterior,
             "Precio_Actual": p_act,
-            "Precio_Consola": p_act if plat_carta == "Consola" else 0,
+            "Precio_Consola": p_con_val,
             "Precio_Min_Hist": min_hist,
             "Precio_Max_Hist": max_hist,
             "Precio_Prom_Hist": prom_hist,
@@ -1210,20 +1265,31 @@ def escanear_oraculo_contenido(page, datos_finales, ocultar=False):
                 subidas_fuertes.append(f"{j['Jugador']} ({j['Precio_Actual']:,} mnds, +{j['Variacion_Bruta_%']}%)")
 
         for med, lim in sorted(REFERENCIA_FODDER.items()):
-            piso_min_med = PISOS_MINIMOS_REALISTAS_MEDIA.get(med, 200)
+            piso_logico = PISOS_LOGICOS_FODDER.get(med, PISOS_MINIMOS_REALISTAS_MEDIA.get(med, 200))
             cands = [
                 x for x in datos_activos_ora
                 if extraer_media_exacta(x.get("Jugador", "")) == str(med)
-                and int(x.get("Precio_Actual", 0) or 0) >= piso_min_med
+                and es_carta_oro_normal_fodder(x)
+                and int(x.get("Precio_Actual", 0) or 0) >= piso_logico
+                and es_multiplo_escalon_ea(int(x.get("Precio_Actual", 0) or 0), PRESUPUESTO_MAXIMO)
             ]
+            if len(cands) < 3:
+                piso_respaldo = PISOS_MINIMOS_REALISTAS_MEDIA.get(med, 200)
+                cands = [
+                    x for x in datos_activos_ora
+                    if extraer_media_exacta(x.get("Jugador", "")) == str(med)
+                    and es_carta_oro_normal_fodder(x)
+                    and int(x.get("Precio_Actual", 0) or 0) >= piso_respaldo
+                    and es_multiplo_escalon_ea(int(x.get("Precio_Actual", 0) or 0), PRESUPUESTO_MAXIMO)
+                ]
             if cands:
                 cands_ord = sorted(cands, key=lambda x: int(x["Precio_Actual"]))
-                if len(cands_ord) >= 5:
-                    idx_p5 = max(0, int(len(cands_ord) * 0.05))
-                    ref_p5 = int(cands_ord[idx_p5]["Precio_Actual"])
-                    cands_ord = [c for c in cands_ord if int(c["Precio_Actual"]) >= int(ref_p5 * 0.65)] or cands_ord
-                min_c = cands_ord[0]
-                fodder_barato.append(f"Media {med}: {min_c['Jugador'].split(' (')[0]} a {int(min_c['Precio_Actual']):,} mnds")
+                top5_p = [int(c["Precio_Actual"]) for c in cands_ord[:5]]
+                mid = len(top5_p) // 2
+                med_raw = top5_p[mid] if len(top5_p) % 2 == 1 else (top5_p[mid - 1] + top5_p[mid]) / 2.0
+                p_mediana = redondear_escalon_ea_cercano(med_raw)
+                top3_noms = ", ".join(c["Jugador"].split(" (")[0].strip() for c in cands_ord[:3])
+                fodder_barato.append(f"Media {med}: {p_mediana:,} mnds (Top 3: {top3_noms})")
 
     dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
     ahora = ahora_arg()
@@ -1313,55 +1379,87 @@ def calcular_termometro_mercado(datos_jugadores):
         f"💡 {consejo}\n\n"
     )
 
+def es_carta_oro_normal_fodder(registro):
+    """Devuelve True solo para cartas Oro/Normal base (excluye TOTW/IF/Promo/Especial/Icono/Héroe)."""
+    nom = str(registro.get("Jugador", "") or "")
+    cat = str(registro.get("Categoria_Carta", "") or "").strip()
+    enl = str(registro.get("Enlace_Optimo", registro.get("Enlace_Futbin", "")) or "")
+    if categoria_version_carta(nom) != "Normal/Oro":
+        return False
+    if cat and sin_tildes(cat).lower() not in ("normal/oro", "normal", "oro", "gold"):
+        return False
+    m_url = re.search(r'/players/(\d+)-[^/]+/27-(\d+)(?:/|$)', enl)
+    if m_url and m_url.group(1) != m_url.group(2):
+        return False
+    return True
+
 def analizar_fodder(datos_jugadores):
     if not datos_jugadores:
-        return "Sin datos de mercado para calcular Fodder.\n", pd.DataFrame()
+        return "Sin datos de mercado para calcular Fodder.\n", pd.DataFrame(columns=COLUMNAS_RADAR_FODDER)
     filas_fodder = []
-    texto_fodder = "🧱 *RADAR DE MEDIAS SBC (Base Exclusiva FUT.GG)*\n━━━━━━━━━━━━━━━━━━\n"
+    texto_fodder = "🧱 *RADAR DE MEDIAS SBC (Base Exclusiva FUT.GG · Mediana Top 5 Oro)*\n━━━━━━━━━━━━━━━━━━\n"
     for media_obj, limites in sorted(REFERENCIA_FODDER.items()):
-        piso_real_min = PISOS_MINIMOS_REALISTAS_MEDIA.get(media_obj, 200)
+        piso_logico = PISOS_LOGICOS_FODDER.get(media_obj, PISOS_MINIMOS_REALISTAS_MEDIA.get(media_obj, 200))
         candidatos = [
             j for j in datos_jugadores
             if extraer_media_exacta(j.get("Jugador", "")) == str(media_obj)
-            and int(j.get("Precio_Actual", 0) or 0) >= piso_real_min
+            and es_carta_oro_normal_fodder(j)
+            and int(j.get("Precio_Actual", 0) or 0) >= piso_logico
             and es_multiplo_escalon_ea(int(j.get("Precio_Actual", 0) or 0), PRESUPUESTO_MAXIMO)
         ]
+        # Respaldo controlado solo si el mercado completo bajó temporalmente del piso lógico
+        if len(candidatos) < 3:
+            piso_respaldo = PISOS_MINIMOS_REALISTAS_MEDIA.get(media_obj, 200)
+            candidatos_resp = [
+                j for j in datos_jugadores
+                if extraer_media_exacta(j.get("Jugador", "")) == str(media_obj)
+                and es_carta_oro_normal_fodder(j)
+                and int(j.get("Precio_Actual", 0) or 0) >= piso_respaldo
+                and es_multiplo_escalon_ea(int(j.get("Precio_Actual", 0) or 0), PRESUPUESTO_MAXIMO)
+            ]
+            if len(candidatos_resp) > len(candidatos):
+                candidatos = candidatos_resp
 
         if candidatos:
             cands_ord = sorted(candidatos, key=lambda x: int(x["Precio_Actual"]))
-            if len(cands_ord) >= 5:
-                idx_p5 = max(0, int(len(cands_ord) * 0.05))
-                ref_p5 = int(cands_ord[idx_p5]["Precio_Actual"])
-                cands_ord = [c for c in cands_ord if int(c["Precio_Actual"]) >= int(ref_p5 * 0.65)] or cands_ord
-            mas_barato = cands_ord[0]
-            precio_min = int(mas_barato["Precio_Actual"])
-            enlace_f = mas_barato.get("Enlace_Optimo", mas_barato.get("Enlace_Futbin", ""))
-            nombre_limpio = mas_barato["Jugador"].split(" (")[0]
+            top5 = cands_ord[:5]
+            precios_top5 = [int(c["Precio_Actual"]) for c in top5]
+            mid = len(precios_top5) // 2
+            mediana_raw = precios_top5[mid] if len(precios_top5) % 2 == 1 else (precios_top5[mid - 1] + precios_top5[mid]) / 2.0
+            precio_mediana = redondear_escalon_ea_cercano(mediana_raw)
 
-            if precio_min <= limites["compra"]:
+            top3 = cands_ord[:3]
+            jugs_ref_txt = ", ".join(
+                f"{c['Jugador'].split(' (')[0].strip()} ({int(c['Precio_Actual']):,})"
+                for c in top3
+            )
+            mas_barato = cands_ord[0]
+            enlace_f = mas_barato.get("Enlace_Optimo", mas_barato.get("Enlace_Futbin", ""))
+
+            if precio_mediana <= limites["compra"]:
                 estado = "✅ COMPRAR"
-            elif precio_min >= limites["venta"]:
+            elif precio_mediana >= limites["venta"]:
                 estado = "🚨 VENDER"
             else:
                 estado = "⏳ ESPERAR"
 
             texto_fodder += (
-                f"🔹 *Media {media_obj}:* `{precio_min:,} mnds` ({estado})\n"
+                f"🔹 *Media {media_obj}:* `{precio_mediana:,} mnds` ({estado})\n"
                 f"   └ 🎯 Piso: `{limites['compra']:,}` | Techo: `{limites['venta']:,}`\n"
-                f"   └ 🛒 Más barato: [*{nombre_limpio}*]({enlace_f})\n\n"
+                f"   └ 🛒 Top 3 Oro: [{jugs_ref_txt}]({enlace_f})\n\n"
             )
             filas_fodder.append({
                 "Media": media_obj,
-                "Precio_Mas_Barato": precio_min,
-                "Jugador_Referencia": nombre_limpio,
+                "Precio_Mas_Barato": precio_mediana,
+                "Jugadores_Referencia": jugs_ref_txt,
                 "Piso_Compra": limites["compra"],
                 "Techo_Venta": limites["venta"],
                 "Senal": estado,
                 "Enlace_Optimo": enlace_f
             })
         else:
-            texto_fodder += f"🔹 *Media {media_obj}:* Sin muestra válida en este escaneo.\n\n"
-    return texto_fodder, pd.DataFrame(filas_fodder)
+            texto_fodder += f"🔹 *Media {media_obj}:* Sin muestra válida de cartas Oro en este escaneo.\n\n"
+    return texto_fodder, pd.DataFrame(filas_fodder, columns=COLUMNAS_RADAR_FODDER)
 
 def es_carta_base_url_gg(enlace):
     """En FUT.GG una carta base (Oro/Plata/Bronce) tiene el mismo ID en el slug y en '/27-{id}/'; los TOTW siempre tienen ID versionado distinto."""
@@ -1730,11 +1828,15 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=
     jugadores_gg = []
     vistos_gg = set()
 
-    # Regla estricta: aislar únicamente la caja individual de cada jugador (contarLinksJugador === 1, máx 6 saltos)
-    # y jamás cruzar al contenedor padre/grilla ni heredar precios de cartas vecinas.
+    # Regla estricta: aislar únicamente la caja individual de cada jugador (contarLinksJugador === 1, máx 6 saltos),
+    # leer precios EXCLUSIVAMENTE desde nodos de cotización de mercado (sin alt de imágenes, stats ni OVR)
+    # y capturar por separado PC y Consola si existen en el DOM o en los datos hidratados de la página.
     script_gg = """
     window.scrollTo(0, document.body.scrollHeight / 2);
     const STOP_TAGS = new Set(['BODY', 'HTML', 'MAIN', 'SECTION', 'TABLE', 'TBODY', 'THEAD', 'UL', 'OL', 'NAV', 'HEADER', 'FOOTER']);
+    const EXCLU_META = /(discard|quicksell|quick.?sell|range|min.?price|max.?price|stat|rating|ovr|attribute|igs|bgs|pac|sho|pas|dri|def|phy)/i;
+    const EXCLU_TXT = /(discard|quicksell|quick.?sell|range|pr:|igs|bgs|pac|sho|pas|dri|def|phy|ovr)/i;
+
     function contarLinksJugador(el) {
         if (!el) return 99;
         let ls = el.querySelectorAll('a[href*="/players/"]');
@@ -1754,20 +1856,121 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=
         }
         return false;
     }
-    function extraerNodoPrecioSeguro(box) {
-        let nodos = Array.from(box.querySelectorAll('[class*="price"], [data-testid*="price"], [aria-label*="price" i]'));
-        let exclu = /(discard|quicksell|quick.?sell|range|min.?price|max.?price|igs|bgs|pac|sho|pas|dri|def|phy)/i;
-        for (let n of nodos) {
-            if (n.offsetParent === null && getComputedStyle(n).display === 'none') continue;
-            let meta = ((typeof n.className === 'string' ? n.className : '') + ' ' + (n.getAttribute('aria-label') || '') + ' ' + (n.getAttribute('data-testid') || '')).toLowerCase();
-            if (exclu.test(meta)) continue;
-            let txt = (n.innerText || n.textContent || '').trim();
-            if (!txt) continue;
-            if (exclu.test(txt)) continue;
-            return txt;
+    function extraerPreciosHidratados() {
+        let mapa = {};
+        function registrarObjeto(obj) {
+            if (!obj || typeof obj !== 'object') return;
+            if (Array.isArray(obj)) {
+                for (let x of obj) registrarObjeto(x);
+                return;
+            }
+            let cid = obj.eaId || obj.cardId || obj.resourceId || obj.id;
+            let pPc = null;
+            let pCon = null;
+            if (obj.prices && typeof obj.prices === 'object') {
+                pPc = obj.prices.pc ?? obj.prices.PC ?? obj.prices.origin ?? null;
+                pCon = obj.prices.console ?? obj.prices.ps ?? obj.prices.xbox ?? obj.prices.PS ?? null;
+            }
+            if (pPc === null && (obj.pcPrice !== undefined || obj.pricePc !== undefined || obj.pc_price !== undefined)) {
+                pPc = obj.pcPrice ?? obj.pricePc ?? obj.pc_price;
+            }
+            if (pCon === null && (obj.consolePrice !== undefined || obj.priceConsole !== undefined || obj.psPrice !== undefined || obj.console_price !== undefined)) {
+                pCon = obj.consolePrice ?? obj.priceConsole ?? obj.psPrice ?? obj.console_price;
+            }
+            if (cid !== undefined && cid !== null && (pPc !== null || pCon !== null)) {
+                let k = String(cid);
+                let prev = mapa[k] || {};
+                mapa[k] = {
+                    pc: (pPc !== null && pPc !== undefined) ? pPc : (prev.pc ?? null),
+                    console: (pCon !== null && pCon !== undefined) ? pCon : (prev.console ?? null)
+                };
+            }
+            for (let k in obj) {
+                if (Object.prototype.hasOwnProperty.call(obj, k)) {
+                    let v = obj[k];
+                    if (v && typeof v === 'object') registrarObjeto(v);
+                }
+            }
         }
-        return '';
+        try {
+            let nextEl = document.getElementById('__NEXT_DATA__');
+            if (nextEl && nextEl.textContent) {
+                registrarObjeto(JSON.parse(nextEl.textContent));
+            }
+        } catch (e) {}
+        try {
+            let scripts = document.querySelectorAll('script');
+            for (let sc of scripts) {
+                let txt = sc.textContent || '';
+                if (!txt || (!txt.includes('pcPrice') && !txt.includes('consolePrice') && !txt.includes('pricePc') && !txt.includes('priceConsole'))) continue;
+                let rx = /"(?:eaId|cardId|resourceId|id)"\\s*:\\s*"?(\\d+)"?[^{}]{0,400}"(?:pcPrice|pricePc|pc_price)"\\s*:\\s*(\\d+)[^{}]{0,250}"(?:consolePrice|priceConsole|psPrice|console_price)"\\s*:\\s*(\\d+)/g;
+                let m;
+                while ((m = rx.exec(txt)) !== null) {
+                    mapa[String(m[1])] = { pc: Number(m[2]), console: Number(m[3]) };
+                }
+                let rx2 = /"(?:eaId|cardId|resourceId|id)"\\s*:\\s*"?(\\d+)"?[^{}]{0,400}"(?:consolePrice|priceConsole|psPrice|console_price)"\\s*:\\s*(\\d+)[^{}]{0,250}"(?:pcPrice|pricePc|pc_price)"\\s*:\\s*(\\d+)/g;
+                while ((m = rx2.exec(txt)) !== null) {
+                    mapa[String(m[1])] = { pc: Number(m[3]), console: Number(m[2]) };
+                }
+            }
+        } catch (e) {}
+        return mapa;
     }
+    function textoSoloNodosPrecio(el) {
+        if (!el) return '';
+        let partes = [];
+        function walk(node) {
+            if (!node) return;
+            if (node.nodeType === 3) {
+                let s = (node.nodeValue || '').trim();
+                if (s) partes.push(s);
+                return;
+            }
+            if (node.nodeType !== 1) return;
+            let tag = (node.tagName || '').toUpperCase();
+            if (tag === 'IMG' || tag === 'SVG' || tag === 'SCRIPT' || tag === 'STYLE') return;
+            let meta = ((typeof node.className === 'string' ? node.className : '') + ' ' + (node.getAttribute('aria-label') || '') + ' ' + (node.getAttribute('data-testid') || '')).toLowerCase();
+            if (EXCLU_META.test(meta)) return;
+            for (let ch of node.childNodes) walk(ch);
+        }
+        walk(el);
+        return partes.join(' ').trim();
+    }
+    function extraerPreciosDOM(box) {
+        let res = { activo: '', pc: '', console: '' };
+        let dataPc = box.getAttribute('data-pc-price') || box.getAttribute('data-price-pc') || '';
+        let dataCon = box.getAttribute('data-console-price') || box.getAttribute('data-price-console') || box.getAttribute('data-ps-price') || '';
+        if (dataPc) res.pc = dataPc.trim();
+        if (dataCon) res.console = dataCon.trim();
+
+        let sel = '[data-testid*="price"], [class*="price"], [aria-label*="price" i], [data-price], [data-pc-price], [data-console-price], [data-ps-price]';
+        let nodos = Array.from(box.querySelectorAll(sel));
+        for (let n of nodos) {
+            let meta = ((typeof n.className === 'string' ? n.className : '') + ' ' + (n.getAttribute('aria-label') || '') + ' ' + (n.getAttribute('data-testid') || '') + ' ' + (n.getAttribute('data-platform') || '')).toLowerCase();
+            if (EXCLU_META.test(meta)) continue;
+            let dPc = n.getAttribute('data-pc-price') || n.getAttribute('data-price-pc') || '';
+            let dCon = n.getAttribute('data-console-price') || n.getAttribute('data-price-console') || n.getAttribute('data-ps-price') || '';
+            if (dPc && !res.pc) res.pc = dPc.trim();
+            if (dCon && !res.console) res.console = dCon.trim();
+
+            let visible = !(n.offsetParent === null && getComputedStyle(n).display === 'none');
+            let txt = textoSoloNodosPrecio(n);
+            if (!txt || EXCLU_TXT.test(txt)) continue;
+
+            if (/(^|[^a-z])(pc|origin)([^a-z]|$)/i.test(meta)) {
+                if (!res.pc) res.pc = txt;
+                if (visible && !res.activo) res.activo = txt;
+            } else if (/(console|ps4|ps5|playstation|xbox)/i.test(meta)) {
+                if (!res.console) res.console = txt;
+                if (visible && !res.activo) res.activo = txt;
+            } else if (visible && !res.activo) {
+                res.activo = txt;
+            }
+        }
+        return res;
+    }
+
+    let mapaHidratado = extraerPreciosHidratados();
     let items = [];
     let enlaces = document.querySelectorAll('a[href*="/players/"]');
     for (let a of enlaces) {
@@ -1808,12 +2011,17 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=
             if (br) badges.push('rarity-' + br);
             if (ba) badges.push(ba);
         }
-        let texto_precio = extraerNodoPrecioSeguro(box);
+
+        let preciosDom = extraerPreciosDOM(box);
+        let texto_precio = preciosDom.activo || '';
         let tp_low = texto_precio.toLowerCase().trim();
         let es_extinta = false;
         if (tp_low && (tp_low === '0' || tp_low === '-' || tp_low === '—' || tp_low === '–' || tp_low === '--' || tp_low.includes('extinct') || tp_low === 'n/a' || tp_low === 'sbc' || tp_low === 'obj' || tp_low.includes('untradeable'))) {
             es_extinta = true;
         }
+        let mCid = href.match(/\\/27-(\\d+)(?:\\/|$)/) || href.match(/\\/players\\/(\\d+)-/);
+        let hid = (mCid && mapaHidratado[String(mCid[1])]) ? mapaHidratado[String(mCid[1])] : {};
+
         let clases_box = (typeof box.className === 'string' ? box.className : '') + ' ' + (typeof a.className === 'string' ? a.className : '') + ' ' + (box.getAttribute('data-rarity') || '');
         let texto_inner = box.innerText || box.textContent || '';
         let texto_alts = alts.join(' | ');
@@ -1825,12 +2033,42 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=
             'texto_alts': texto_alts,
             'texto_badges': texto_badges,
             'texto_precio': texto_precio,
+            'texto_precio_pc': preciosDom.pc || '',
+            'texto_precio_consola': preciosDom.console || '',
+            'precio_pc_json': hid.pc ?? null,
+            'precio_consola_json': hid.console ?? null,
             'es_extinta': es_extinta,
             'clases': clases_box
         });
     }
     return items;
     """
+
+    def _resolver_precios_item(item, tope_max, media_int):
+        texto_inner_i = item.get('texto_inner', item.get('texto', ''))
+        texto_p_i = item.get('texto_precio', '')
+        es_ext_i = bool(item.get('es_extinta', False))
+        p_pc_i = validar_precio_plataforma_gg(
+            item.get('precio_pc_json'), item.get('texto_precio_pc', ''),
+            presupuesto_max=tope_max, media=media_int
+        )
+        p_con_i = validar_precio_plataforma_gg(
+            item.get('precio_consola_json'), item.get('texto_precio_consola', ''),
+            presupuesto_max=tope_max, media=media_int
+        )
+        val_dom_i = extraer_precio_carta_unica_gg(
+            texto_inner_i, tope_max,
+            texto_precio=texto_p_i, es_extinta_dom=es_ext_i, media=media_int
+        )
+        if etq_plat == "Consola":
+            val_activo = p_con_i if p_con_i != 0 else val_dom_i
+            if p_con_i == 0 and val_activo > 0:
+                p_con_i = val_activo
+        else:
+            val_activo = p_pc_i if p_pc_i != 0 else val_dom_i
+            if p_pc_i == 0 and val_activo > 0:
+                p_pc_i = val_activo
+        return val_activo, max(0, p_pc_i), max(0, p_con_i)
 
     # Pase 0: Escaneo relámpago dedicado de cartas TOTW en piso (<= TOPE_TOTW_DESCARTE), validando rareza real en DOM
     urls_totw_dedicadas = [
@@ -1855,17 +2093,12 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=
                     texto_inner = item.get('texto_inner', item.get('texto', ''))
                     texto_alts = item.get('texto_alts', '')
                     texto_badges = item.get('texto_badges', '')
-                    texto_p = item.get('texto_precio', '')
-                    es_ext_dom = bool(item.get('es_extinta', False))
                     clases_box = item.get('clases', '')
 
                     media = extraer_media_futgg(texto_inner, texto_alts, valor_gg=0, min_media=75)
                     if media == "??":
                         continue
-                    valor_gg = extraer_precio_carta_unica_gg(
-                        texto_inner, TOPE_TOTW_DESCARTE,
-                        texto_precio=texto_p, es_extinta_dom=es_ext_dom, media=int(media)
-                    )
+                    valor_gg, p_pc_t, p_con_t = _resolver_precios_item(item, TOPE_TOTW_DESCARTE, int(media))
                     if not (9000 <= valor_gg <= TOPE_TOTW_DESCARTE) or not es_multiplo_escalon_ea(valor_gg, TOPE_TOTW_DESCARTE):
                         continue
                     # Verificar rareza REAL dentro de la caja individual (jamás asumir TOTW por la URL)
@@ -1885,6 +2118,8 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=
                         "Tipo_Carta": "TOTW",
                         "Plataforma": etq_plat,
                         "Precio_FUTGG": valor_gg,
+                        "Precio_PC": p_pc_t,
+                        "Precio_Consola": p_con_t,
                         "Es_Extinta": False,
                         "Clave": clave_cruce(nombre_fmt),
                         "Enlace_GG": f"https://www.fut.gg{href_limpio}" if href_limpio.startswith('/') else href_limpio
@@ -1932,18 +2167,13 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=
             texto_inner = item.get('texto_inner', item.get('texto', ''))
             texto_alts = item.get('texto_alts', '')
             texto_badges = item.get('texto_badges', '')
-            texto_p = item.get('texto_precio', '')
-            es_ext_dom = bool(item.get('es_extinta', False))
             clases_box = item.get('clases', '')
 
             media = extraer_media_futgg(texto_inner, texto_alts, valor_gg=0, min_media=65)
             if media == "??":
                 continue
 
-            valor_gg = extraer_precio_carta_unica_gg(
-                texto_inner, presupuesto_max,
-                texto_precio=texto_p, es_extinta_dom=es_ext_dom, media=int(media)
-            )
+            valor_gg, p_pc_v, p_con_v = _resolver_precios_item(item, presupuesto_max, int(media))
             if valor_gg == -1:
                 # Precio real pero por encima del presupuesto máximo configurado
                 continue
@@ -1966,6 +2196,8 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=
                 "Tipo_Carta": tipo_carta_gg,
                 "Plataforma": etq_plat,
                 "Precio_FUTGG": 0 if es_ext_final else valor_gg,
+                "Precio_PC": 0 if es_ext_final and etq_plat == "PC" else p_pc_v,
+                "Precio_Consola": 0 if es_ext_final and etq_plat == "Consola" else p_con_v,
                 "Es_Extinta": es_ext_final,
                 "Clave": clave_cruce(nombre_fmt),
                 "Enlace_GG": f"https://www.fut.gg{href_limpio}" if href_limpio.startswith('/') else href_limpio
