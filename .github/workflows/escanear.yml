@@ -34,6 +34,7 @@ jobs:
     - name: 🚀 Ejecutar el bot recolector
       env:
         PLATAFORMA_FUTGG: pc
+        GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
       run: python bot_fc27.py auto
 
     - name: 💾 Guardar precios actualizados directo en GitHub

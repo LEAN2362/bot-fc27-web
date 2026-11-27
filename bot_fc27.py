@@ -112,28 +112,36 @@ def ahora_arg():
 # CONEXIÓN Y SINCRONIZACIÓN CON GOOGLE SHEETS (NUBE 24/7)
 # ==========================================
 def obtener_cliente_gsheets():
+    """Autentica gspread usando credenciales_google.json o la variable de entorno GCP_CREDENTIALS (GitHub Actions)."""
     if os.path.exists(ARCHIVO_CRED):
-        try:
-            return gspread.service_account(filename=ARCHIVO_CRED)
-        except Exception as e:
-            print(f"⚠️ Aviso leyendo {ARCHIVO_CRED}: {e}")
+        print(f"🔑 Autenticando Google Sheets mediante archivo local '{ARCHIVO_CRED}'...")
+        return gspread.service_account(filename=ARCHIVO_CRED)
+
+    raw_env = (os.environ.get("GCP_CREDENTIALS") or os.environ.get("GOOGLE_CREDENTIALS_JSON") or "").strip()
+    if raw_env:
+        print("🔑 Autenticando Google Sheets mediante variable de entorno GCP_CREDENTIALS...")
+        cred_dict = json.loads(raw_env)
+        return gspread.service_account_from_dict(cred_dict)
+
     return None
 
-def subir_dataframe_gsheets(sh, nombre_hoja, df_subir, max_filas=25000):
+def subir_dataframe_gsheets(sh, nombre_hoja, df_subir, max_filas=25000, fecha_corte=""):
+    df_limpio = df_subir.tail(max_filas).fillna("") if len(df_subir) > max_filas else df_subir.fillna("")
     try:
-        df_limpio = df_subir.tail(max_filas).fillna("") if len(df_subir) > max_filas else df_subir.fillna("")
-        try:
-            ws = sh.worksheet(nombre_hoja)
-            ws.clear()
-        except Exception:
-            ws = sh.add_worksheet(title=nombre_hoja, rows=str(max(500, len(df_limpio) + 50)), cols="25")
-        if not df_limpio.empty:
-            datos_lista = [df_limpio.columns.values.tolist()] + df_limpio.astype(str).values.tolist()
-            ws.update(datos_lista)
-        else:
-            ws.update([df_subir.columns.values.tolist()])
-    except Exception as e:
-        print(f"⚠️ Aviso sincronizando hoja '{nombre_hoja}' en la nube: {e}")
+        ws = sh.worksheet(nombre_hoja)
+        ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=nombre_hoja, rows=str(max(500, len(df_limpio) + 50)), cols="25")
+    if not df_limpio.empty:
+        datos_lista = [df_limpio.columns.values.tolist()] + df_limpio.astype(str).values.tolist()
+        ws.update(values=datos_lista, range_name="A1")
+        n_subidas = len(df_limpio)
+    else:
+        ws.update(values=[df_subir.columns.values.tolist()], range_name="A1")
+        n_subidas = 0
+    etq_ts = f" | Corte: {fecha_corte}" if fecha_corte else ""
+    print(f"   ✅ [Google Sheets] Hoja '{nombre_hoja}': {n_subidas:,} filas subidas{etq_ts}")
+    return n_subidas
 
 def sincronizar_todo_a_google_sheets(
     df_final, fecha_actual, texto_limpio, oraculo_txt,
@@ -142,29 +150,52 @@ def sincronizar_todo_a_google_sheets(
 ):
     gc = obtener_cliente_gsheets()
     if not gc:
-        print("ℹ️ Guardado directo en Lista_Jugadores_FC27.xlsx (GitHub Auto-Sync activo).")
+        print(
+            "⚠️ [Google Sheets] Sin credenciales configuradas (ni 'credenciales_google.json' ni env 'GCP_CREDENTIALS'). "
+            "Solo se guardó localmente en Lista_Jugadores_FC27.xlsx."
+        )
         return
-    try:
-        print(f"\n☁️ Subiendo base de datos actualizada a Google Sheets ('{NOMBRE_SHEET}')...")
-        sh = gc.open(NOMBRE_SHEET)
-        subir_dataframe_gsheets(sh, "Historial_Tendencias", df_final, max_filas=25000)
-        df_ia_nube = pd.DataFrame({"Fecha": [fecha_actual], "Reporte": [texto_limpio], "Oraculo": [oraculo_txt]})
-        subir_dataframe_gsheets(sh, "Recomendacion_IA", df_ia_nube, max_filas=100)
-        subir_dataframe_gsheets(sh, "Mi_Cartera", df_cartera, max_filas=1000)
-        subir_dataframe_gsheets(sh, "Mis_Alertas", df_alertas, max_filas=500)
-        if not df_pnl_excel.empty:
-            subir_dataframe_gsheets(sh, "Dashboard_Financiero", df_pnl_excel, max_filas=200)
-        if not df_fodder.empty:
-            subir_dataframe_gsheets(sh, "Radar_Fodder", df_fodder, max_filas=200)
-        if not df_evos.empty:
-            subir_dataframe_gsheets(sh, "Radar_Evos", df_evos, max_filas=500)
-        df_totw_sync = df_totw if (df_totw is not None and not df_totw.empty) else pd.DataFrame(columns=COLUMNAS_RADAR_TOTW)
-        subir_dataframe_gsheets(sh, "Radar_TOTW", df_totw_sync, max_filas=500)
-        if not df_domino.empty:
-            subir_dataframe_gsheets(sh, "Radar_Links_Domino", df_domino, max_filas=500)
-        print("✅ ¡Google Sheets actualizado con éxito en la nube!")
-    except Exception as e:
-        print(f"⚠️ Error al sincronizar con Google Sheets: {e}")
+
+    print(f"\n☁️ Subiendo base de datos actualizada a Google Sheets ('{NOMBRE_SHEET}') | Timestamp: {fecha_actual}...")
+    sh = gc.open(NOMBRE_SHEET)
+    total_filas = 0
+    hojas_ok = 0
+
+    total_filas += subir_dataframe_gsheets(sh, "Historial_Tendencias", df_final, max_filas=25000, fecha_corte=fecha_actual)
+    hojas_ok += 1
+
+    df_ia_nube = pd.DataFrame({"Fecha": [fecha_actual], "Reporte": [texto_limpio], "Oraculo": [oraculo_txt]})
+    total_filas += subir_dataframe_gsheets(sh, "Recomendacion_IA", df_ia_nube, max_filas=100, fecha_corte=fecha_actual)
+    hojas_ok += 1
+
+    total_filas += subir_dataframe_gsheets(sh, "Mi_Cartera", df_cartera, max_filas=1000, fecha_corte=fecha_actual)
+    hojas_ok += 1
+
+    total_filas += subir_dataframe_gsheets(sh, "Mis_Alertas", df_alertas, max_filas=500, fecha_corte=fecha_actual)
+    hojas_ok += 1
+
+    if not df_pnl_excel.empty:
+        total_filas += subir_dataframe_gsheets(sh, "Dashboard_Financiero", df_pnl_excel, max_filas=200, fecha_corte=fecha_actual)
+        hojas_ok += 1
+    if not df_fodder.empty:
+        total_filas += subir_dataframe_gsheets(sh, "Radar_Fodder", df_fodder, max_filas=200, fecha_corte=fecha_actual)
+        hojas_ok += 1
+    if not df_evos.empty:
+        total_filas += subir_dataframe_gsheets(sh, "Radar_Evos", df_evos, max_filas=500, fecha_corte=fecha_actual)
+        hojas_ok += 1
+
+    df_totw_sync = df_totw if (df_totw is not None and not df_totw.empty) else pd.DataFrame(columns=COLUMNAS_RADAR_TOTW)
+    total_filas += subir_dataframe_gsheets(sh, "Radar_TOTW", df_totw_sync, max_filas=500, fecha_corte=fecha_actual)
+    hojas_ok += 1
+
+    if not df_domino.empty:
+        total_filas += subir_dataframe_gsheets(sh, "Radar_Links_Domino", df_domino, max_filas=500, fecha_corte=fecha_actual)
+        hojas_ok += 1
+
+    print(
+        f"✅ ¡Google Sheets ('{NOMBRE_SHEET}') actualizado con éxito! "
+        f"{total_filas:,} filas totales subidas en {hojas_ok} hojas | Último corte: {fecha_actual}"
+    )
 
 # ==========================================
 # TECLADO INTERACTIVO DE TELEGRAM (BOTONES)
@@ -1772,9 +1803,10 @@ def extraer_media_futgg(texto_inner, texto_alts, valor_gg=0, min_media=65):
 
 def fijar_plataforma_futgg(page, plataforma=PLATAFORMA_FUTGG):
     """
-    Garantiza consistencia estricta de plataforma ('pc' o 'console') en FUT.GG mediante:
-    1) Hook CDP en cada documento nuevo (localStorage + cookies).
-    2) Verificación y clic sobre el selector visual de plataforma de FUT.GG si difiere.
+    Garantiza selección explícita de plataforma ('pc' o 'console') en FUT.GG mediante:
+    1) Hook CDP en cada documento nuevo (cookies + localStorage de mercado/plataforma).
+    2) Clic directo o apertura de desplegable Console -> PC en la UI de FUT.GG y espera de re-hidratación.
+    3) Diagnóstico explícito en consola de la plataforma activa y cookies/storage persistidos.
     """
     plat = "console" if str(plataforma or "").strip().lower() == "console" else "pc"
     plat_cookie = "ps" if plat == "console" else "pc"
@@ -1783,42 +1815,114 @@ def fijar_plataforma_futgg(page, plataforma=PLATAFORMA_FUTGG):
         localStorage.setItem('platform', '{plat}');
         localStorage.setItem('futgg_platform', '{plat}');
         localStorage.setItem('selectedPlatform', '{plat}');
+        localStorage.setItem('market', '{plat}');
+        localStorage.setItem('futgg_market', '{plat}');
+        localStorage.setItem('futgg-market', '{plat}');
+        localStorage.setItem('price_platform', '{plat}');
+        localStorage.setItem('pricePlatform', '{plat}');
         document.cookie = "platform={plat}; path=/; domain=.fut.gg; max-age=31536000; SameSite=Lax";
         document.cookie = "platform={plat}; path=/; max-age=31536000; SameSite=Lax";
-        document.cookie = "futgg_platform={plat_cookie}; path=/; max-age=31536000; SameSite=Lax";
+        document.cookie = "market={plat}; path=/; domain=.fut.gg; max-age=31536000; SameSite=Lax";
+        document.cookie = "market={plat}; path=/; max-age=31536000; SameSite=Lax";
+        document.cookie = "futgg_platform={plat_cookie}; path=/; domain=.fut.gg; max-age=31536000; SameSite=Lax";
+        document.cookie = "futgg_market={plat}; path=/; domain=.fut.gg; max-age=31536000; SameSite=Lax";
     }} catch(e) {{}}
     """
     try:
         page.run_cdp('Page.addScriptToEvaluateOnNewDocument', source=js_init)
     except Exception:
         pass
+
     try:
         page.get("https://www.fut.gg/players/")
-        page.wait(0.8)
+        page.ele('xpath://a[contains(@href, "/players/")]', timeout=8)
+        page.wait(1.0)
         page.run_js(js_init)
-        # Verificar si existe botón de plataforma en el header de FUT.GG y fijar la plataforma deseada
-        page.run_js(f"""
+
+        # Paso 1: intentar clic directo sobre botón/tab/radio "PC" o "Console"
+        res_ui = page.run_js(f"""
         try {{
             let target = '{plat}';
-            let btns = Array.from(document.querySelectorAll('button, [role="button"], a'));
-            for (let b of btns) {{
-                let txt = ((b.innerText || b.textContent || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')).toLowerCase().trim();
-                if (target === 'pc' && (txt === 'pc' || txt.includes('switch to pc') || txt.includes('select pc'))) {{
-                    let active = (b.getAttribute('aria-pressed') === 'true') || (b.className || '').toLowerCase().includes('active');
-                    if (!active) b.click();
-                    break;
+            function esVisible(el) {{
+                if (!el) return false;
+                let st = getComputedStyle(el);
+                return st.display !== 'none' && st.visibility !== 'hidden' && el.offsetWidth > 0 && el.offsetHeight > 0;
+            }}
+            function buscarYClickear(objetivo) {{
+                let sels = 'button, [role="button"], [role="menuitem"], [role="option"], [role="radio"], [role="tab"], label, a';
+                let btns = Array.from(document.querySelectorAll(sels));
+                for (let b of btns) {{
+                    if (!esVisible(b)) continue;
+                    let rawTxt = (b.innerText || b.textContent || '').trim();
+                    let aria = (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '');
+                    let tLow = rawTxt.toLowerCase();
+                    let aLow = aria.toLowerCase();
+                    if (objetivo === 'pc' && (tLow === 'pc' || aLow.includes('switch to pc') || aLow.includes('select pc') || aLow === 'pc')) {{
+                        let active = (b.getAttribute('aria-pressed') === 'true') || (b.getAttribute('aria-selected') === 'true') || (b.getAttribute('data-state') === 'active') || (b.getAttribute('data-state') === 'on');
+                        if (!active) b.click();
+                        return {{ok: true, modo: active ? 'ya_activo' : 'click_directo', texto: rawTxt || aria}};
+                    }}
+                    if (objetivo === 'console' && (tLow === 'console' || tLow === 'ps' || aLow.includes('switch to console') || aLow === 'console')) {{
+                        let active = (b.getAttribute('aria-pressed') === 'true') || (b.getAttribute('aria-selected') === 'true') || (b.getAttribute('data-state') === 'active');
+                        if (!active) b.click();
+                        return {{ok: true, modo: active ? 'ya_activo' : 'click_directo', texto: rawTxt || aria}};
+                    }}
                 }}
-                if (target === 'console' && (txt === 'console' || txt === 'ps' || txt.includes('switch to console'))) {{
-                    let active = (b.getAttribute('aria-pressed') === 'true') || (b.className || '').toLowerCase().includes('active');
-                    if (!active) b.click();
-                    break;
+                return {{ok: false}};
+            }}
+            let r1 = buscarYClickear(target);
+            if (r1.ok) return r1;
+
+            // Si es un menú desplegable que muestra "Console" por defecto, abrirlo primero
+            if (target === 'pc') {{
+                let triggers = Array.from(document.querySelectorAll('button, [role="button"], [aria-haspopup]'));
+                for (let tr of triggers) {{
+                    if (!esVisible(tr)) continue;
+                    let txt = ((tr.innerText || tr.textContent || '') + ' ' + (tr.getAttribute('aria-label') || '')).toLowerCase().trim();
+                    if (txt === 'console' || txt.includes('console') || txt.includes('platform') || txt.includes('market')) {{
+                        tr.click();
+                        return {{ok: false, abrio_menu: true, trigger: txt}};
+                    }}
                 }}
             }}
-        }} catch(e) {{}}
-        """)
-        page.wait(0.4)
-    except Exception:
-        pass
+            return {{ok: false, abrio_menu: false}};
+        }} catch(e) {{ return {{ok: false, err: String(e)}}; }}
+        """) or {}
+
+        if isinstance(res_ui, dict) and res_ui.get("abrio_menu"):
+            page.wait(0.6)
+            res_ui = page.run_js(f"""
+            try {{
+                let target = '{plat}';
+                let opts = Array.from(document.querySelectorAll('button, [role="menuitem"], [role="option"], [role="radio"], li, a, div'));
+                for (let o of opts) {{
+                    let txt = (o.innerText || o.textContent || '').trim().toLowerCase();
+                    if (target === 'pc' && txt === 'pc' && o.offsetWidth > 0) {{
+                        o.click();
+                        return {{ok: true, modo: 'click_menu_desplegable', texto: txt}};
+                    }}
+                }}
+                return {{ok: false, modo: 'menu_sin_pc'}};
+            }} catch(e) {{ return {{ok: false, err: String(e)}}; }}
+            """) or res_ui
+
+        page.wait(1.0)
+        # Re-inyectar storage/cookies y capturar qué claves de plataforma/mercado guardó FUT.GG
+        diag_plat = page.run_js("""
+        try {
+            let ls = {};
+            for (let i = 0; i < localStorage.length; i++) {
+                let k = localStorage.key(i);
+                if (/(plat|market|price|console|pc)/i.test(k || '')) {
+                    ls[k] = localStorage.getItem(k);
+                }
+            }
+            return {storage: ls, cookies: document.cookie};
+        } catch(e) { return {}; }
+        """) or {}
+        print(f"🖥️ [FUT.GG] Plataforma fijada='{plat.upper()}' | UI={res_ui} | Storage={diag_plat.get('storage', {})}")
+    except Exception as e:
+        print(f"⚠️ Aviso configurando plataforma {plat.upper()} en FUT.GG: {e}")
     return plat
 
 def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=PLATAFORMA_FUTGG):
@@ -2078,9 +2182,8 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=
     for url_t in urls_totw_dedicadas:
         try:
             page.get(url_t)
-            if page.ele('xpath://a[contains(@href, "/players/")]', timeout=4):
-                page.wait(0.4)
-                _detener_carga_segura(page)
+            if page.ele('xpath://a[contains(@href, "/players/")]', timeout=8):
+                page.wait(0.8)
                 datos_t = page.run_js(script_gg) or []
                 for item in datos_t:
                     href_limpio = (item.get('href', '') or '').split('?')[0]
@@ -2137,14 +2240,13 @@ def escanear_futgg(page, presupuesto_max, max_paginas=PAGINAS_FUTGG, plataforma=
         for intento in range(2):
             try:
                 page.get(url_gg)
-                if page.ele('xpath://a[contains(@href, "/players/")]', timeout=5):
-                    page.wait(random.uniform(0.25, 0.45))
-                    _detener_carga_segura(page)
+                if page.ele('xpath://a[contains(@href, "/players/")]', timeout=8):
+                    page.wait(random.uniform(0.55, 0.85))
                     datos_gg = page.run_js(script_gg)
                     break
             except Exception:
                 if intento == 0:
-                    time.sleep(0.4)
+                    time.sleep(0.6)
                     continue
         if not datos_gg:
             paginas_vacias_seguidas += 1
@@ -2500,7 +2602,7 @@ def cargar_estado_excel():
         except Exception:
             pass
 
-    if (df_viejo is None or df_viejo.empty) and os.path.exists(ARCHIVO_CRED):
+    if df_viejo is None or df_viejo.empty:
         gc = obtener_cliente_gsheets()
         if gc:
             try:
@@ -2523,8 +2625,8 @@ def cargar_estado_excel():
                         df_c_gs[col_n] = pd.to_numeric(df_c_gs[col_n], errors="coerce").fillna(1 if col_n == "Cantidad" else 0)
                     df_c_gs["Cantidad"] = df_c_gs["Cantidad"].clip(lower=1).astype(int)
                     df_cartera = df_c_gs[columnas_cartera]
-            except Exception:
-                pass
+            except Exception as e_gs:
+                print(f"⚠️ Aviso cargando estado inicial desde Google Sheets: {e_gs}")
 
     return df_viejo, df_evos_viejo, df_cartera, df_alertas, historial_precios
 
@@ -2603,7 +2705,10 @@ def ejecutar_ciclo_radar(modo_elegido, ocultar_navegador=False):
     enviar_alerta_telegram(oraculo_txt)
 
     if not datos_finales:
-        print("⚠️ No se obtuvieron datos en este ciclo.")
+        msg_vacio = "❌ [ERROR CRÍTICO] No se obtuvieron cartas en este ciclo de FUT.GG (0 filas). No se sobrescribió Excel ni Google Sheets."
+        print(msg_vacio)
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            sys.exit(1)
         return
 
     df_nuevo = pd.DataFrame(datos_finales)

@@ -2534,7 +2534,7 @@ def sanear_dataframe_mercado(df_raw):
     return df
 
 @st.cache_data(ttl=30)
-def cargar_por_id_publico(sheet_id):
+def cargar_por_id_publico(sheet_id, sync_nonce=0):
     hojas = {}
     nombres_hojas = [
         "Historial_Tendencias", "Mi_Cartera", "Recomendacion_IA",
@@ -2544,7 +2544,7 @@ def cargar_por_id_publico(sheet_id):
     df_base_comparacion = None
 
     for h in nombres_hojas:
-        url_csv = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={quote(h)}"
+        url_csv = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={quote(h)}&_cb={sync_nonce}"
         try:
             df_h = pd.read_csv(url_csv)
             df_h = df_h.loc[:, ~df_h.columns.str.contains("^Unnamed")]
@@ -2629,14 +2629,19 @@ try:
     link_activo = st.session_state["link_manual"] or obtener_link_guardado()
     sheet_id = extraer_id_sheet(link_activo)
 
+    if "sync_nonce" not in st.session_state:
+        st.session_state["sync_nonce"] = 0
+
     datos = {}
     msg_error = ""
     estado_conexion = "⚠️ Sin conexión a datos"
+    fuente_datos_activa = "⚠️ Sin fuente"
 
     if sheet_id:
-        datos, msg_error = cargar_por_id_publico(sheet_id)
+        datos, msg_error = cargar_por_id_publico(sheet_id, sync_nonce=st.session_state["sync_nonce"])
         if msg_error == "OK":
             estado_conexion = "☁️ Conectado a Google Sheets (Nube 24/7)"
+            fuente_datos_activa = "☁️ Google Sheets"
 
     if os.path.exists(ARCHIVO_EXCEL):
         try:
@@ -2649,7 +2654,8 @@ try:
             dt_excel = pd.to_datetime(df_hist_excel["Fecha"], errors="coerce").max() if (tiene_padron_valido and "Fecha" in df_hist_excel.columns) else pd.NaT
             df_sh_tmp = datos.get("Historial_Tendencias", pd.DataFrame()) if datos else pd.DataFrame()
             dt_sheet = pd.to_datetime(df_sh_tmp["Fecha"], errors="coerce").max() if (not df_sh_tmp.empty and "Fecha" in df_sh_tmp.columns) else pd.NaT
-            excel_mas_reciente = (not datos) or pd.isna(dt_sheet) or (pd.notna(dt_excel) and dt_excel >= dt_sheet)
+            # Solo reemplazar Google Sheets por Excel Local si Sheets no cargó o si Excel es estrictamente más reciente
+            excel_mas_reciente = (not datos) or pd.isna(dt_sheet) or (pd.notna(dt_excel) and dt_excel > dt_sheet)
 
             if tiene_padron_valido and excel_mas_reciente:
                 cartera_respaldo = datos.get("Mi_Cartera", pd.DataFrame()) if datos else pd.DataFrame()
@@ -2686,7 +2692,8 @@ try:
                         datos["Mis_Alertas"] = convertir_columnas_numericas(pd.read_excel(ARCHIVO_EXCEL, sheet_name="Mis_Alertas"))
                     except Exception:
                         datos["Mis_Alertas"] = pd.DataFrame()
-                estado_conexion = "☁️ Conectado a Nube 24/7 (GitHub Auto-Sync + Sheets)"
+                fuente_datos_activa = "📂 Excel Local"
+                estado_conexion = "📂 Leyendo desde Excel Local (Lista_Jugadores_FC27.xlsx)"
         except Exception:
             pass
 
@@ -2709,6 +2716,8 @@ try:
         c_sb1, c_sb2 = st.columns(2)
         with c_sb1:
             if st.button("🔄 Sincronizar", use_container_width=True):
+                st.cache_data.clear()
+                st.session_state["sync_nonce"] = int(st.session_state.get("sync_nonce", 0)) + 1
                 for k_ov in ["override_Mi_Cartera", "override_Mis_Alertas"]:
                     st.session_state.pop(k_ov, None)
                 for arch_loc in [ARCHIVO_CARTERA_LOCAL, ARCHIVO_ALERTAS_LOCAL]:
@@ -2717,7 +2726,6 @@ try:
                             os.remove(arch_loc)
                         except Exception:
                             pass
-                st.cache_data.clear()
                 st.rerun()
         with c_sb2:
             auto_ref = st.toggle("⏱️ Auto 60s", value=False)
@@ -3166,10 +3174,10 @@ try:
                 <div class="header-club-sub">{html_lib.escape(str(nombre_club_activo))} &nbsp;·&nbsp; Base Exclusiva FUT.GG (Hasta 10,000 cartas) &nbsp;·&nbsp; Cloud 24/7</div>
                 <div class="header-badges">
                     <span class="status-pill">{html_lib.escape(estado_conexion)}</span>
+                    <span class="status-pill" style="border-color:rgba(56,189,248,0.45);">🗄️ Fuente: <b>{html_lib.escape(fuente_datos_activa)}</b> · 🕒 <b>{html_lib.escape(str(ultima_act))}</b></span>
                     <span class="status-pill">{html_lib.escape(etiqueta_plat)}</span>
                     <span class="status-pill">📦 Padrón FUT.GG <b>{total_cartas_corte:,}</b></span>
                     <span class="status-pill" style="border-color:{color_salud}55;">🩺 Salud <b style="color:{color_salud};">{salud_datos_pct:.1f}%</b> · ✅ <b>{cartas_activas_corte:,}</b> · ⛔ <b>{cartas_extintas_corte:,}</b></span>
-                    <span class="status-pill">🕒 Corte <b>{html_lib.escape(str(ultima_act))}</b></span>
                 </div>
             </div>
         </div>
